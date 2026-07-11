@@ -1,0 +1,552 @@
+import os
+from datetime import datetime, timedelta
+
+import psycopg2
+import psycopg2.extras
+from flask import Flask, g, jsonify, request
+
+app = Flask(__name__)
+
+PREFIX = ""
+
+
+def get_db():
+    if "db" not in g:
+        g.db = psycopg2.connect(
+            os.environ["DATABASE_URL"],
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+        g.db.autocommit = False
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exc=None):
+    db = g.pop("db", None)
+    if db is not None:
+        if exc is not None:
+            db.rollback()
+        db.close()
+
+
+# ── Schema setup ──────────────────────────────────────────────────────────────
+
+def init_db():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS employees (
+            employee_id  TEXT PRIMARY KEY,
+            name         TEXT NOT NULL,
+            position     TEXT,
+            store        TEXT,
+            created_at   TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_logs (
+            id               SERIAL PRIMARY KEY,
+            employee_id      TEXT REFERENCES employees(employee_id) ON DELETE CASCADE,
+            date             TEXT,
+            clock_in         TEXT,
+            clock_out        TEXT,
+            hours            NUMERIC,
+            status           TEXT,
+            scheduled_start  TEXT,
+            minutes_late     INTEGER,
+            notes            TEXT,
+            created_at       TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS shift_swaps (
+            id              SERIAL PRIMARY KEY,
+            requester_id    TEXT REFERENCES employees(employee_id) ON DELETE CASCADE,
+            recipient_id    TEXT REFERENCES employees(employee_id) ON DELETE CASCADE,
+            shift_date      TEXT,
+            original_shift  TEXT,
+            swapped_shift   TEXT,
+            status          TEXT DEFAULT 'pending',
+            notes           TEXT,
+            created_at      TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    db.commit()
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+@app.before_request
+def require_api_key():
+    if request.path == "/api/healthz":
+        return None
+    api_key = os.environ.get("ATTENDANCE_API_KEY")
+    if not api_key:
+        return jsonify({"error": "Server misconfiguration: ATTENDANCE_API_KEY not set"}), 500
+    if request.headers.get("X-API-Key") != api_key:
+        return jsonify({"error": "Unauthorized: missing or invalid X-API-Key header"}), 401
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def calc_minutes_late(scheduled_start, clock_in):
+    if not scheduled_start or not clock_in:
+        return None
+    try:
+        fmt = "%H:%M"
+        sched = datetime.strptime(scheduled_start.strip(), fmt)
+        actual = datetime.strptime(clock_in.strip(), fmt)
+        diff = int((actual - sched).total_seconds() / 60)
+        return max(0, diff)
+    except ValueError:
+        return None
+
+
+def rows_to_list(cursor):
+    return [dict(r) for r in cursor.fetchall()]
+
+
+def row_to_dict(cursor):
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+@app.route("/api/healthz", methods=["GET"])
+def healthz():
+    return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
+
+
+# ── Import ────────────────────────────────────────────────────────────────────
+
+@app.route("/api/import", methods=["POST"])
+def import_attendance():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    records = data if isinstance(data, list) else data.get("records", [])
+    if not isinstance(records, list):
+        return jsonify({"error": "Expected a JSON array or {records: [...]}"}), 400
+
+    db = get_db()
+    cur = db.cursor()
+    imported_employees = 0
+    imported_logs = 0
+    errors = []
+
+    for i, record in enumerate(records):
+        employee_id = record.get("employee_id") or record.get("employeeId")
+        name = record.get("name")
+
+        if not employee_id or not name:
+            errors.append({"index": i, "error": "employee_id and name are required"})
+            continue
+
+        cur.execute(
+            """
+            INSERT INTO employees (employee_id, name, position, store)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (employee_id) DO UPDATE SET
+                name     = EXCLUDED.name,
+                position = COALESCE(EXCLUDED.position, employees.position),
+                store    = COALESCE(EXCLUDED.store, employees.store)
+            """,
+            (employee_id, name, record.get("position"), record.get("store")),
+        )
+        imported_employees += 1
+
+        for log in record.get("logs", []):
+            date = log.get("date")
+            if not date:
+                continue
+
+            clock_in = log.get("clock_in") or log.get("clockIn")
+            scheduled_start = log.get("scheduled_start") or log.get("scheduledStart")
+            minutes_late = log.get("minutes_late") or log.get("minutesLate")
+
+            if minutes_late is None:
+                minutes_late = calc_minutes_late(scheduled_start, clock_in)
+
+            cur.execute(
+                """
+                INSERT INTO attendance_logs
+                    (employee_id, date, clock_in, clock_out, hours,
+                     status, scheduled_start, minutes_late, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    employee_id,
+                    date,
+                    clock_in,
+                    log.get("clock_out") or log.get("clockOut"),
+                    log.get("hours"),
+                    log.get("status"),
+                    scheduled_start,
+                    minutes_late,
+                    log.get("notes"),
+                ),
+            )
+            imported_logs += 1
+
+    db.commit()
+    response = {"imported_employees": imported_employees, "imported_logs": imported_logs}
+    if errors:
+        response["errors"] = errors
+    return jsonify(response), 201
+
+
+# ── Employees ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/employees", methods=["GET"])
+def get_employees():
+    db = get_db()
+    cur = db.cursor()
+    store = request.args.get("store")
+    position = request.args.get("position")
+    query = "SELECT * FROM employees WHERE TRUE"
+    params = []
+    if store:
+        query += " AND store = %s"
+        params.append(store)
+    if position:
+        query += " AND position = %s"
+        params.append(position)
+    query += " ORDER BY name"
+    cur.execute(query, params)
+    return jsonify(rows_to_list(cur))
+
+
+@app.route("/api/employees", methods=["POST"])
+def create_employee():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    employee_id = data.get("employee_id") or data.get("employeeId")
+    name = data.get("name")
+    if not employee_id or not name:
+        return jsonify({"error": "employee_id and name are required"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO employees (employee_id, name, position, store)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (employee_id) DO UPDATE SET
+            name     = EXCLUDED.name,
+            position = COALESCE(EXCLUDED.position, employees.position),
+            store    = COALESCE(EXCLUDED.store, employees.store)
+        RETURNING *
+        """,
+        (employee_id, name, data.get("position"), data.get("store")),
+    )
+    emp = row_to_dict(cur)
+    db.commit()
+    return jsonify(emp), 201
+
+
+@app.route("/api/employees/<employee_id>", methods=["PATCH"])
+def update_employee(employee_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM employees WHERE employee_id = %s", (employee_id,))
+    if not cur.fetchone():
+        return jsonify({"error": f"Employee {employee_id} not found"}), 404
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    allowed = {"name", "position", "store"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return jsonify({"error": f"No updatable fields. Allowed: {sorted(allowed)}"}), 400
+    set_clause = ", ".join(f"{col} = %s" for col in updates)
+    values = list(updates.values()) + [employee_id]
+    cur.execute(f"UPDATE employees SET {set_clause} WHERE employee_id = %s RETURNING *", values)
+    emp = row_to_dict(cur)
+    db.commit()
+    return jsonify(emp)
+
+
+@app.route("/api/employees/<employee_id>", methods=["DELETE"])
+def delete_employee(employee_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM employees WHERE employee_id = %s", (employee_id,))
+    if not cur.fetchone():
+        return jsonify({"error": f"Employee {employee_id} not found"}), 404
+    cur.execute("DELETE FROM employees WHERE employee_id = %s", (employee_id,))
+    db.commit()
+    return jsonify({"deleted": True, "employee_id": employee_id})
+
+
+# ── Attendance logs ───────────────────────────────────────────────────────────
+
+@app.route("/api/logs", methods=["GET"])
+def get_logs():
+    db = get_db()
+    cur = db.cursor()
+    employee_id = request.args.get("employee_id")
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
+    status = request.args.get("status")
+    query = "SELECT * FROM attendance_logs WHERE TRUE"
+    params = []
+    if employee_id:
+        query += " AND employee_id = %s"
+        params.append(employee_id)
+    if date_from:
+        query += " AND date >= %s"
+        params.append(date_from)
+    if date_to:
+        query += " AND date <= %s"
+        params.append(date_to)
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    query += " ORDER BY date DESC, employee_id"
+    cur.execute(query, params)
+    return jsonify(rows_to_list(cur))
+
+
+ALLOWED_LOG_FIELDS = {"date", "clock_in", "clock_out", "hours", "status",
+                      "scheduled_start", "minutes_late", "notes"}
+
+
+@app.route("/api/logs/<int:log_id>", methods=["PATCH", "DELETE"])
+def update_or_delete_log(log_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM attendance_logs WHERE id = %s", (log_id,))
+    log = row_to_dict(cur)
+    if not log:
+        return jsonify({"error": f"Log {log_id} not found"}), 404
+    if request.method == "DELETE":
+        cur.execute("DELETE FROM attendance_logs WHERE id = %s", (log_id,))
+        db.commit()
+        return jsonify({"deleted": True, "id": log_id})
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    updates = {k: v for k, v in data.items() if k in ALLOWED_LOG_FIELDS}
+    if not updates:
+        return jsonify({"error": f"No updatable fields. Allowed: {sorted(ALLOWED_LOG_FIELDS)}"}), 400
+    if "minutes_late" not in updates:
+        new_clock_in = updates.get("clock_in", log["clock_in"])
+        new_scheduled = updates.get("scheduled_start", log["scheduled_start"])
+        computed = calc_minutes_late(new_scheduled, new_clock_in)
+        if computed is not None:
+            updates["minutes_late"] = computed
+    set_clause = ", ".join(f"{col} = %s" for col in updates)
+    values = list(updates.values()) + [log_id]
+    cur.execute(f"UPDATE attendance_logs SET {set_clause} WHERE id = %s", values)
+    db.commit()
+    cur.execute("SELECT * FROM attendance_logs WHERE id = %s", (log_id,))
+    return jsonify(row_to_dict(cur))
+
+
+# ── Shift swaps ───────────────────────────────────────────────────────────────
+
+@app.route("/api/swap", methods=["POST"])
+def record_swap():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    requester_id = data.get("requester_id") or data.get("requesterId")
+    recipient_id = data.get("recipient_id") or data.get("recipientId")
+    shift_date = data.get("shift_date") or data.get("shiftDate")
+    missing = [f for f, v in [
+        ("requester_id", requester_id),
+        ("recipient_id", recipient_id),
+        ("shift_date", shift_date),
+    ] if not v]
+    if missing:
+        return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
+    status = data.get("status", "pending")
+    valid_statuses = {"pending", "approved", "rejected", "completed"}
+    if status not in valid_statuses:
+        return jsonify({"error": f"status must be one of: {', '.join(sorted(valid_statuses))}"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO shift_swaps
+            (requester_id, recipient_id, shift_date, original_shift, swapped_shift, status, notes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            requester_id, recipient_id, shift_date,
+            data.get("original_shift") or data.get("originalShift"),
+            data.get("swapped_shift") or data.get("swappedShift"),
+            status, data.get("notes"),
+        ),
+    )
+    swap = row_to_dict(cur)
+    db.commit()
+    return jsonify(swap), 201
+
+
+@app.route("/api/swaps", methods=["GET"])
+def get_swaps():
+    db = get_db()
+    cur = db.cursor()
+    employee_id = request.args.get("employee_id")
+    status = request.args.get("status")
+    query = "SELECT * FROM shift_swaps WHERE TRUE"
+    params = []
+    if employee_id:
+        query += " AND (requester_id = %s OR recipient_id = %s)"
+        params.extend([employee_id, employee_id])
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    cur.execute(query, params)
+    return jsonify(rows_to_list(cur))
+
+
+ALLOWED_SWAP_FIELDS = {"status", "notes", "original_shift", "swapped_shift", "shift_date"}
+
+
+@app.route("/api/swap/<int:swap_id>", methods=["PATCH"])
+def update_swap(swap_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM shift_swaps WHERE id = %s", (swap_id,))
+    if not cur.fetchone():
+        return jsonify({"error": f"Swap {swap_id} not found"}), 404
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    updates = {k: v for k, v in data.items() if k in ALLOWED_SWAP_FIELDS}
+    if not updates:
+        return jsonify({"error": f"No updatable fields. Allowed: {sorted(ALLOWED_SWAP_FIELDS)}"}), 400
+    if "status" in updates:
+        valid_statuses = {"pending", "approved", "rejected", "completed"}
+        if updates["status"] not in valid_statuses:
+            return jsonify({"error": f"status must be one of: {', '.join(sorted(valid_statuses))}"}), 400
+    set_clause = ", ".join(f"{col} = %s" for col in updates)
+    values = list(updates.values()) + [swap_id]
+    cur.execute(f"UPDATE shift_swaps SET {set_clause} WHERE id = %s RETURNING *", values)
+    swap = row_to_dict(cur)
+    db.commit()
+    return jsonify(swap)
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+WEEKEND_DAYS = {4, 5, 6}  # Friday=4, Saturday=5, Sunday=6
+NCNS_STATUSES = {"no_call_no_show", "ncns"}
+CALLED_IN_STATUSES = {"called_in", "call_in", "call-in"}
+DISCIPLINARY_STAGES = [
+    (0,  7,  "Good Standing"),
+    (7,  9,  "Hours May Be Reduced"),
+    (9,  10, "Written Warning"),
+    (10, 13, "Final Written Warning"),
+    (13, None, "Termination"),
+]
+
+
+def disciplinary_stage(points, has_ncns=False):
+    if has_ncns:
+        return "Automatic Termination"
+    for lo, hi, label in DISCIPLINARY_STAGES:
+        if hi is None or points < hi:
+            if points >= lo:
+                return label
+    return "Termination"
+
+
+def base_points_for_log(status, minutes_late):
+    status = (status or "").lower().strip()
+    if status in NCNS_STATUSES:
+        return None
+    if status in CALLED_IN_STATUSES:
+        return 2.0
+    if minutes_late is not None and minutes_late > 0:
+        return 1.0 if minutes_late <= 60 else 2.0
+    if status == "late":
+        return 1.0
+    if status in {"late_major", "late_1hr", "late_2hr"}:
+        return 2.0
+    return 0.0
+
+
+def is_weekend(date_str):
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").weekday() in WEEKEND_DAYS
+    except ValueError:
+        return False
+
+
+@app.route("/api/stats", methods=["GET"])
+def get_stats():
+    db = get_db()
+    cur = db.cursor()
+    window_days = int(request.args.get("window_days", 90))
+    since = (datetime.utcnow() - timedelta(days=window_days)).strftime("%Y-%m-%d")
+    employee_id = request.args.get("employee_id")
+    emp_query = "SELECT * FROM employees WHERE TRUE"
+    emp_params = []
+    if employee_id:
+        emp_query += " AND employee_id = %s"
+        emp_params.append(employee_id)
+    emp_query += " ORDER BY name"
+    cur.execute(emp_query, emp_params)
+    employees = rows_to_list(cur)
+    results = []
+    for emp in employees:
+        eid = emp["employee_id"]
+        cur.execute(
+            "SELECT id, status, date, minutes_late FROM attendance_logs "
+            "WHERE employee_id = %s AND date >= %s ORDER BY date",
+            (eid, since),
+        )
+        logs = rows_to_list(cur)
+        total_points = 0.0
+        has_ncns = False
+        point_log = []
+        for log in logs:
+            status = (log["status"] or "").lower().strip()
+            date_str = log["date"] or ""
+            minutes_late = log["minutes_late"]
+            base = base_points_for_log(status, minutes_late)
+            if base is None:
+                has_ncns = True
+                point_log.append({
+                    "log_id": log["id"], "date": date_str, "status": status,
+                    "base_points": "NCNS", "weekend": is_weekend(date_str),
+                    "points_applied": "Automatic Termination",
+                })
+                continue
+            if base == 0.0:
+                continue
+            weekend = is_weekend(date_str)
+            applied = base * 2 if weekend else base
+            total_points += applied
+            point_log.append({
+                "log_id": log["id"], "date": date_str, "status": status,
+                "minutes_late": minutes_late, "base_points": base,
+                "weekend": weekend, "points_applied": applied,
+            })
+        total_points = round(total_points, 2)
+        results.append({
+            "employee_id": eid, "name": emp["name"],
+            "position": emp["position"], "store": emp["store"],
+            "active_points": total_points, "has_ncns": has_ncns,
+            "disciplinary_stage": disciplinary_stage(total_points, has_ncns),
+            "point_log": point_log, "window_days": window_days,
+            "window_since": since, "logs_evaluated": len(logs),
+        })
+    return jsonify(results)
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+with app.app_context():
+    init_db()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

@@ -1,0 +1,1783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Attendance Manager</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-2: #273449;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-d: #0ea5e9;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --orange: #f97316;
+      --red: #ef4444;
+      --red-d: #b91c1c;
+      --radius: 14px;
+      --shadow: 0 4px 20px rgba(0,0,0,.25);
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+    button { font-family: inherit; cursor: pointer; }
+    a { color: var(--accent); }
+
+    /* ── Login ───────────────────────────── */
+    #login {
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 24px;
+      box-shadow: var(--shadow);
+    }
+    .login-card h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    .login-card p { color: var(--muted); margin: 0 0 20px; font-size: .9rem; }
+    .login-card label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
+    input[type="password"], input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+    .btn {
+      width: 100%;
+      padding: 12px 16px;
+      margin-top: 16px;
+      background: var(--accent-d);
+      color: #06283b;
+      font-weight: 700;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-sm {
+      width: auto;
+      margin: 0;
+      padding: 8px 14px;
+      font-size: .85rem;
+      border-radius: 8px;
+    }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-weight: 600;
+    }
+    .btn-green { background: var(--green); color: #052e13; }
+    .btn-red { background: var(--red); color: #fff; }
+    .btn-warn { background: var(--orange); color: #1a0800; }
+    .role-store [data-log-action] { display: none !important; }
+    .role-readonly .supervisor-only { display: none !important; }
+    .redemption-form { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px 20px 16px; margin-bottom: 6px; }
+    .redemption-form h3 { margin: 0 0 14px; font-size: .8rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+    .rform-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    @media (max-width: 620px) { .rform-grid { grid-template-columns: 1fr; } }
+    .field-label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+    .role-badge { font-size: .72rem; color: var(--muted); padding: 3px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; letter-spacing: .03em; }
+    .error {
+      color: #fecaca;
+      background: rgba(239,68,68,.12);
+      border: 1px solid rgba(239,68,68,.3);
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: .85rem;
+      margin-top: 14px;
+    }
+    .hidden { display: none !important; }
+
+    /* ── App shell ───────────────────────── */
+    header.topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(15,23,42,.9);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      padding: env(safe-area-inset-top) 0 0;
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.05rem; }
+    .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+    .topbar-actions { display: flex; gap: 8px; align-items: center; }
+
+    nav.tabs {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding: 0 12px;
+      max-width: 1400px;
+      margin: 0 auto;
+      scrollbar-width: none;
+    }
+    nav.tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      color: var(--muted);
+      padding: 12px 14px;
+      font-size: .92rem;
+      font-weight: 600;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+    }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+    .badge-count {
+      display: inline-block;
+      min-width: 18px;
+      padding: 1px 6px;
+      margin-left: 4px;
+      font-size: .72rem;
+      background: var(--red);
+      color: #fff;
+      border-radius: 999px;
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 60px; }
+    .panel { display: none; }
+    .panel.active { display: block; animation: fade .2s ease; }
+    @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+    .section-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 14px; gap: 10px; }
+    .section-head h2 { font-size: 1.15rem; margin: 0; }
+    .muted { color: var(--muted); font-size: .85rem; }
+
+    /* ── Summary cards ───────────────────── */
+    .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    @media (min-width: 680px) { .cards { grid-template-columns: repeat(4, 1fr); } }
+    @media (min-width: 680px) { .cards-5 { grid-template-columns: repeat(5, 1fr); } }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .card .num { font-size: 1.9rem; font-weight: 800; line-height: 1; }
+    .card .lbl { color: var(--muted); font-size: .8rem; margin-top: 8px; }
+    .card.flag .num { color: var(--orange); }
+    .card.danger .num { color: var(--red); }
+    .card.ok .num { color: var(--green); }
+
+    /* ── Tables / lists ──────────────────── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; min-width: 520px; }
+    th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 600; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; position: sticky; top: 0; background: var(--surface-2); }
+    tr:last-child td { border-bottom: none; }
+    td .name { font-weight: 600; }
+    td .sub { color: var(--muted); font-size: .78rem; }
+
+    .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: .76rem; font-weight: 600; white-space: nowrap; }
+    .stage-good { background: rgba(34,197,94,.15); color: #86efac; }
+    .stage-warn { background: rgba(234,179,8,.15); color: #fde047; }
+    .stage-orange { background: rgba(249,115,22,.15); color: #fdba74; }
+    .stage-red { background: rgba(239,68,68,.15); color: #fca5a5; }
+    .stage-term { background: var(--red-d); color: #fff; }
+    .points { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+    .status-pending { background: rgba(234,179,8,.15); color: #fde047; }
+    .status-approved { background: rgba(34,197,94,.15); color: #86efac; }
+    .status-rejected { background: rgba(239,68,68,.15); color: #fca5a5; }
+    .status-completed { background: rgba(56,189,248,.15); color: #7dd3fc; }
+
+    .empty { text-align: center; color: var(--muted); padding: 36px 16px; }
+    .empty .big { font-size: 2rem; margin-bottom: 8px; }
+
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading { text-align: center; color: var(--muted); padding: 40px; }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: calc(20px + env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px 18px;
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      z-index: 50;
+      font-size: .9rem;
+      max-width: 90vw;
+    }
+    .toast.err { border-color: var(--red); color: #fecaca; }
+
+    .filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    select {
+      padding: 9px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: .88rem;
+    }
+    select:focus { outline: none; border-color: var(--accent); }
+    .filter-row input[type="date"] {
+      padding: 9px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: .88rem;
+      color-scheme: dark;
+    }
+    .filter-row input[type="date"]:focus { outline: none; border-color: var(--accent); }
+
+    /* ── Coverage form ───────────────────────── */
+    .form-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 20px 16px;
+      margin-bottom: 22px;
+    }
+    .form-card h3 { margin: 0 0 16px; font-size: 1rem; font-weight: 700; }
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+    @media (min-width: 600px) { .form-grid { grid-template-columns: 1fr 1fr; } }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: .8rem; color: var(--muted); font-weight: 500; }
+    .form-group select,
+    .form-group input[type="date"],
+    .form-group input[type="text"] {
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: .9rem;
+      font-family: inherit;
+      color-scheme: dark;
+    }
+    .form-group select:focus,
+    .form-group input:focus { outline: none; border-color: var(--accent); }
+    .form-footer { display: flex; align-items: flex-start; justify-content: flex-end; margin-top: 16px; gap: 10px; flex-wrap: wrap; }
+
+    /* ── Coverage list ───────────────────────── */
+    .coverage-list { display: grid; gap: 10px; }
+    .cov-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    .cov-card .cov-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .cov-card .cov-who { font-weight: 700; font-size: .95rem; }
+    .cov-card .cov-meta { color: var(--muted); font-size: .82rem; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+    .cov-card .cov-meta b { color: var(--text); font-weight: 600; }
+  </style>
+</head>
+<body>
+
+  <!-- ── Login screen ── -->
+  <div id="login">
+    <form class="login-card" id="loginForm">
+      <h1>Attendance Manager</h1>
+      <p>Sign in to continue. Your session is saved for this browser tab.</p>
+      <label for="loginUsername">Username</label>
+      <input type="text" id="loginUsername" autocomplete="username" placeholder="Username" required />
+      <label for="loginPassword" style="margin-top:10px">Password</label>
+      <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Password" required />
+      <button class="btn" type="submit" id="loginBtn">Sign in</button>
+      <div class="error hidden" id="loginError"></div>
+    </form>
+  </div>
+
+  <!-- ── App ── -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand"><span class="dot"></span> Attendance Manager</div>
+        <div class="topbar-actions">
+          <span class="role-badge" id="roleBadge"></span>
+          <button class="btn btn-sm btn-ghost" id="refreshBtn">Refresh</button>
+          <button class="btn btn-sm btn-ghost" id="logoutBtn">Sign out</button>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="yesterday">Yesterday</button>
+        <button class="tab" data-tab="employees">Employees</button>
+        <button class="tab" data-tab="pointhistory">Point History</button>
+        <button class="tab" data-tab="logs">Attendance</button>
+        <button class="tab supervisor-only" data-tab="streaks">Streaks</button>
+        <button class="tab" data-tab="redemptions">Point Redemptions</button>
+        <button class="tab supervisor-only" data-tab="addpoints">Add Points</button>
+        <button class="tab supervisor-only" data-tab="pointreset">Reset Points</button>
+        <button class="tab supervisor-only" data-tab="admin">Admin</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Overview -->
+      <section class="panel active" id="panel-overview">
+        <div class="section-head">
+          <h2>Overview</h2>
+          <span class="muted" id="windowNote"></span>
+        </div>
+        <div class="cards" id="summaryCards">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+        <div class="section-head" style="margin-top:26px;">
+          <h2>Needs attention</h2>
+        </div>
+        <div class="table-wrap" id="flaggedWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Employees -->
+      <section class="panel" id="panel-employees">
+        <div class="section-head">
+          <h2>Employees</h2>
+          <span class="muted" id="empCount"></span>
+        </div>
+        <div class="filter-row">
+          <select id="stageFilter">
+            <option value="">All stages</option>
+          </select>
+        </div>
+        <div class="table-wrap" id="employeesWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Yesterday -->
+      <section class="panel" id="panel-yesterday">
+        <div class="section-head">
+          <h2>Yesterday</h2>
+          <span class="muted" id="yesterdayDate"></span>
+        </div>
+        <div class="cards cards-5" id="yesterdayCards">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+        <div class="section-head" style="margin-top:26px;">
+          <h2>Violations</h2>
+        </div>
+        <div class="table-wrap" id="yesterdayViolationsWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Logs -->
+      <section class="panel" id="panel-logs">
+        <div class="section-head">
+          <h2>Attendance Logs</h2>
+          <span class="muted" id="logCount"></span>
+        </div>
+        <div class="filter-row">
+          <input type="date" id="logDateFrom" title="From date" />
+          <span style="color:var(--muted);font-size:.85rem;white-space:nowrap">to</span>
+          <input type="date" id="logDateTo" title="To date" />
+          <select id="logStoreFilter"><option value="">All stores</option></select>
+          <select id="logStatusFilter"><option value="">All statuses</option></select>
+          <button class="btn btn-sm btn-ghost" id="logClearBtn">Clear</button>
+        </div>
+        <div class="table-wrap" id="logsWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Streaks -->
+      <section class="panel supervisor-only" id="panel-streaks">
+        <div class="section-head">
+          <h2>Streaks <span class="role-badge" style="margin-left:6px">Beta</span></h2>
+          <span class="muted">Top 10 for consecutive shift days with no logged incident, company-wide (best-effort — days off can't be distinguished from clean shifts)</span>
+        </div>
+        <div class="table-wrap" id="streaksWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Point Redemptions -->
+      <!-- Point History (all roles) -->
+      <section class="panel" id="panel-pointhistory">
+        <div class="section-head"><h2>Point History</h2><span class="muted">Select a team member to view their point events</span></div>
+        <div style="margin-bottom:18px;max-width:360px">
+          <label class="field-label" for="phEmp">Team member</label>
+          <select id="phEmp"><option value="">Select a team member…</option></select>
+        </div>
+        <div id="phResults">
+          <div class="empty"><div class="big">👤</div>Select a team member above to see their point history</div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-redemptions">
+        <div class="section-head"><h2>Point Redemptions</h2></div>
+
+        <div class="redemption-form">
+          <h3>Submit redemption</h3>
+          <form id="redemptionForm">
+            <div class="rform-grid">
+              <div>
+                <label class="field-label" for="redemptionEmp">Employee</label>
+                <select id="redemptionEmp" required><option value="">Select employee…</option></select>
+              </div>
+              <div>
+                <label class="field-label" for="redemptionType">Redemption type</label>
+                <select id="redemptionType" required>
+                  <option value="">Select type…</option>
+                  <option value="came_in_day_off">Came in on day off (−2 pts)</option>
+                  <option value="came_in_weekend_day_off">Came in on weekend day off (−3 pts)</option>
+                  <option value="came_in_early">Came in 1+ hours early (−1 pt)</option>
+                </select>
+              </div>
+              <div>
+                <label class="field-label" for="redemptionDate">Date</label>
+                <input type="date" id="redemptionDate" required />
+              </div>
+              <div>
+                <label class="field-label" for="redemptionNotes">Notes (optional)</label>
+                <input type="text" id="redemptionNotes" placeholder="Optional notes" />
+              </div>
+            </div>
+            <div id="redemptionFormError" class="error hidden" style="margin-bottom:12px"></div>
+            <button class="btn" type="submit" id="redemptionSubmitBtn">Submit for approval</button>
+          </form>
+        </div>
+
+        <div class="section-head" style="margin-top:20px"><h2>Pending</h2></div>
+        <div class="table-wrap" id="redemptionsPendingWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+
+        <div class="section-head supervisor-only" style="margin-top:24px"><h2>Approved</h2></div>
+        <div class="table-wrap supervisor-only" id="redemptionsApprovedWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+
+        <div class="section-head supervisor-only" style="margin-top:24px"><h2>Denied</h2></div>
+        <div class="table-wrap supervisor-only" id="redemptionsDeniedWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Add Points (supervisor only) -->
+      <section class="panel supervisor-only" id="panel-addpoints">
+        <div class="section-head"><h2>Add Points Manually</h2></div>
+
+        <div class="redemption-form">
+          <h3>New point entry</h3>
+          <form id="addPointsForm">
+            <div class="rform-grid">
+              <div>
+                <label class="field-label" for="apEmp">Employee</label>
+                <select id="apEmp" required><option value="">Select employee…</option></select>
+              </div>
+              <div>
+                <label class="field-label" for="apEvent">Event type / reason</label>
+                <input type="text" id="apEvent" placeholder="e.g. Repeated tardiness" required />
+              </div>
+              <div>
+                <label class="field-label" for="apPoints">Points to add</label>
+                <input type="number" id="apPoints" min="0.5" step="0.5" placeholder="e.g. 1.5" required />
+              </div>
+              <div>
+                <label class="field-label" for="apDate">Date of incident</label>
+                <input type="date" id="apDate" required />
+              </div>
+            </div>
+            <div style="margin-bottom:14px">
+              <label class="field-label" for="apNotes">Notes (required — explain why points are being added)</label>
+              <textarea id="apNotes" rows="2" style="width:100%;resize:vertical;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-size:.9rem;font-family:inherit" placeholder="Explain why these points are being added…" required></textarea>
+            </div>
+            <div id="apFormError" class="error hidden" style="margin-bottom:10px"></div>
+            <button class="btn" type="submit" id="apSubmitBtn">Add points</button>
+          </form>
+        </div>
+
+        <div class="section-head" style="margin-top:20px">
+          <h2>Manual point history</h2>
+          <span class="muted" id="apCount"></span>
+        </div>
+        <div class="table-wrap" id="apHistoryWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Reset Points (owner only) -->
+      <section class="panel supervisor-only" id="panel-pointreset">
+        <div class="section-head"><h2>Reset Store Points</h2></div>
+        <p class="muted" style="margin:0 0 16px;font-size:.85rem;max-width:640px">
+          Use this if tracking lapsed for a while (e.g. while away) and points are out of sync with reality.
+          Resetting a store clears every employee's active points back to zero as of today — past attendance
+          records are kept for history, only the point calculation going forward ignores anything before the
+          reset date.
+        </p>
+
+        <div class="redemption-form">
+          <h3>Reset a store</h3>
+          <div class="rform-grid">
+            <div>
+              <label class="field-label" for="resetStoreSelect">Store</label>
+              <select id="resetStoreSelect" required><option value="">Select store…</option></select>
+            </div>
+            <div>
+              <label class="field-label" for="resetReason">Reason</label>
+              <input type="text" id="resetReason" placeholder="e.g. Back from vacation, lost track of covered shifts" required />
+            </div>
+          </div>
+          <div id="resetFormError" class="error hidden" style="margin-bottom:10px"></div>
+          <button class="btn btn-red" type="button" id="resetSubmitBtn">Reset all points for this store</button>
+        </div>
+
+        <div class="section-head" style="margin-top:20px">
+          <h2>Reset history</h2>
+        </div>
+        <div class="table-wrap" id="pointResetsWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+      <!-- Admin (owner only) -->
+      <section class="panel supervisor-only" id="panel-admin">
+        <div class="section-head"><h2>Store Assignments</h2><span class="muted">Assign each store to a district manager</span></div>
+        <div class="table-wrap" id="assignmentsWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+
+        <div class="redemption-form" style="margin-top:24px">
+          <h3>Add user account</h3>
+          <form id="userForm">
+            <div class="rform-grid">
+              <div>
+                <label class="field-label" for="userUsername">Username</label>
+                <input type="text" id="userUsername" placeholder="e.g. 2501 or jsmith" required />
+              </div>
+              <div>
+                <label class="field-label" for="userRole">Role</label>
+                <select id="userRole" required>
+                  <option value="">Select role…</option>
+                  <option value="owner">Owner — sees all stores</option>
+                  <option value="dm">District Manager — sees assigned stores</option>
+                  <option value="store">Store — sees one store</option>
+                </select>
+              </div>
+              <div id="userStoreField" class="hidden">
+                <label class="field-label" for="userStore">Store (for store accounts)</label>
+                <select id="userStore"><option value="">Select store…</option></select>
+              </div>
+              <div>
+                <label class="field-label" for="userPassword">Password</label>
+                <input type="text" id="userPassword" placeholder="Set an initial password" required />
+              </div>
+            </div>
+            <div id="userFormError" class="error hidden" style="margin-bottom:12px"></div>
+            <button class="btn" type="submit" id="userSubmitBtn">Create account</button>
+          </form>
+        </div>
+
+        <div class="section-head" style="margin-top:20px"><h2>User accounts</h2><span class="muted" id="userCount"></span></div>
+        <div class="table-wrap" id="usersWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Exempt confirmation modal -->
+  <div id="exemptModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:200;align-items:center;justify-content:center;padding:20px">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px 24px 20px;width:min(440px,100%);box-shadow:0 8px 40px rgba(0,0,0,.4)">
+      <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700">Exempt this entry</h3>
+      <p style="margin:0 0 16px;font-size:.85rem;color:var(--muted)">Points from this entry will no longer count toward the employee's total. The record is kept for audit purposes.</p>
+      <label class="field-label" for="exemptReason">Reason for exemption <span style="color:var(--red)">*</span></label>
+      <textarea id="exemptReason" rows="3" style="width:100%;resize:vertical;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-size:.9rem;font-family:inherit;margin-bottom:10px;box-sizing:border-box;margin-top:5px" placeholder="Explain why this entry is being exempted…"></textarea>
+      <div id="exemptError" class="error" style="display:none;margin-bottom:10px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-ghost" id="exemptCancelBtn">Cancel</button>
+        <button class="btn" id="exemptConfirmBtn">Exempt entry</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    "use strict";
+    const TOKEN_STORE = "attendance_dash_token";
+    const ROLE_STORE  = "attendance_dash_role";
+    const API = "/api";
+
+    // ── State ──
+    let stats = [];        // /api/stats results
+    let employees = [];    // /api/employees
+    let empNames = {};     // employee_id -> name
+    let logs = [];
+    let allLogs = [];      // full unfiltered log set (for Yesterday + filter reset)
+    let redemptions = [];  // /api/redemptions
+    let streaks = [];      // /api/streaks
+    let _exemptId = null;
+    let _exemptBtn = null;
+    let users = [];        // /api/users (owner only)
+    let storeList = [];     // /api/stores (with dm assignment)
+    let pointResets = [];   // /api/point-resets
+
+    const REDEMPTION_LABELS = {
+      came_in_day_off: "Came in on day off",
+      came_in_weekend_day_off: "Came in on weekend day off",
+      came_in_early: "Came in 1+ hours early",
+    };
+    const REDEMPTION_POINTS = { came_in_day_off: 2, came_in_weekend_day_off: 3, came_in_early: 1 };
+
+    // ── Helpers ──
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+    const getToken = () => sessionStorage.getItem(TOKEN_STORE);
+    const setToken = (t) => sessionStorage.setItem(TOKEN_STORE, t);
+    const getRole  = () => sessionStorage.getItem(ROLE_STORE) || "";
+    const setRole  = (r) => sessionStorage.setItem(ROLE_STORE, r);
+    const clearSession = () => {
+      sessionStorage.removeItem(TOKEN_STORE);
+      sessionStorage.removeItem(ROLE_STORE);
+    };
+
+    let toastTimer;
+    function toast(msg, isErr) {
+      clearTimeout(toastTimer);
+      let el = $("#toast");
+      if (!el) { el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+      el.className = "toast" + (isErr ? " err" : "");
+      el.textContent = msg;
+      toastTimer = setTimeout(() => el.remove(), 3000);
+    }
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign({ "X-Dashboard-Token": getToken() }, opts.headers || {});
+      if (opts.body) headers["Content-Type"] = "application/json";
+      const res = await fetch(API + path, Object.assign({}, opts, { headers }));
+      if (res.status === 401) {
+        showLogin("Your session expired. Please sign in again.");
+        throw new Error("unauthorized");
+      }
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).error || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      return res.status === 204 ? null : res.json();
+    }
+
+    // ── Stage styling ──
+    function stageClass(stage) {
+      const s = (stage || "").toLowerCase();
+      if (s.includes("good")) return "stage-good";
+      if (s.includes("reduced")) return "stage-warn";
+      if (s === "written warning") return "stage-orange";
+      if (s.includes("final")) return "stage-red";
+      if (s.includes("termination")) return "stage-term";
+      return "stage-warn";
+    }
+    const isFlagged = (r) => r.has_ncns || !(r.disciplinary_stage || "").toLowerCase().includes("good");
+
+    // ── Auth flow ──
+    const ROLE_LABELS = { owner: "Owner", dm: "District Manager", store: "Store" };
+    const isOwner = () => getRole() === "owner";
+    function applyRole(role) {
+      // Owner = full control. DMs can correct attendance logs for their stores
+      // but see no admin features. Store accounts are fully read-only.
+      document.body.classList.remove("role-owner", "role-readonly", "role-dm", "role-store");
+      if (role === "owner") document.body.classList.add("role-owner");
+      else if (role) document.body.classList.add("role-readonly", "role-" + role);
+      const badge = $("#roleBadge");
+      if (badge) badge.textContent = role ? (ROLE_LABELS[role] || role) : "";
+    }
+    function showLogin(errMsg) {
+      clearSession();
+      applyRole("");
+      $("#app").classList.add("hidden");
+      $("#login").classList.remove("hidden");
+      const err = $("#loginError");
+      if (errMsg) { err.textContent = errMsg; err.classList.remove("hidden"); }
+      else err.classList.add("hidden");
+      const uEl = $("#loginUsername");
+      if (uEl) { uEl.value = ""; uEl.focus(); }
+      const pEl = $("#loginPassword");
+      if (pEl) pEl.value = "";
+    }
+    function showApp() {
+      applyRole(getRole());
+      $("#login").classList.add("hidden");
+      $("#app").classList.remove("hidden");
+    }
+
+    $("#loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = ($("#loginUsername").value || "").trim();
+      const password = $("#loginPassword").value;
+      if (!username || !password) return;
+      const btn = $("#loginBtn");
+      btn.disabled = true; btn.textContent = "Signing in…";
+      try {
+        const res = await fetch(API + "/dashboard/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+          let msg = "Invalid username or password.";
+          try { msg = (await res.json()).error || msg; } catch (_) {}
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        setToken(data.token);
+        setRole(data.role || "");
+        showApp();
+        loadAll();
+      } catch (err) {
+        clearSession();
+        $("#loginError").textContent = err.message || "Could not sign in.";
+        $("#loginError").classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Sign in";
+      }
+    });
+
+    $("#logoutBtn").addEventListener("click", () => { showLogin(); });
+    $("#refreshBtn").addEventListener("click", () => loadAll(true));
+
+    // ── Tabs ──
+    $$(".tab").forEach((tab) => tab.addEventListener("click", () => {
+      $$(".tab").forEach((t) => t.classList.remove("active"));
+      $$(".panel").forEach((p) => p.classList.remove("active"));
+      tab.classList.add("active");
+      $("#panel-" + tab.dataset.tab).classList.add("active");
+    }));
+
+    // ── Data load ──
+    async function loadAll(isRefresh) {
+      try {
+        const [statsData, empData, redemptionData, streaksData] = await Promise.all([
+          api("/stats"),
+          api("/employees"),
+          api("/redemptions"),
+          isOwner() ? api("/streaks") : Promise.resolve([]),
+        ]);
+        stats = statsData;
+        employees = empData;
+        redemptions = redemptionData;
+        streaks = streaksData;
+        empNames = {};
+        stats.forEach((s) => { empNames[s.employee_id] = s.name; });
+        employees.forEach((e) => { if (!empNames[e.employee_id]) empNames[e.employee_id] = e.name; });
+        // logs depend on having employee names; fetch after
+        allLogs = await api("/logs");
+        allLogs.forEach((l) => {
+          if (!empNames[l.employee_id]) empNames[l.employee_id] = l.employee_name || l.employee_id;
+        });
+        logs = [...allLogs];
+
+        // Populate store filter from employees
+        const stores = [...new Set(employees.map((e) => e.store).filter(Boolean))].sort();
+        const storeSel = $("#logStoreFilter");
+        if (storeSel) {
+          const curStore = storeSel.value;
+          storeSel.innerHTML = '<option value="">All stores</option>' +
+            stores.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+          if (curStore) storeSel.value = curStore;
+        }
+
+        // Populate status filter from all logs
+        const logStatuses = [...new Set(allLogs.map((l) => l.status).filter(Boolean))].sort();
+        const stSel = $("#logStatusFilter");
+        if (stSel) {
+          const curSt = stSel.value;
+          stSel.innerHTML = '<option value="">All statuses</option>' +
+            logStatuses.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+          if (curSt) stSel.value = curSt;
+        }
+
+        renderOverview();
+        renderYesterday();
+        renderEmployees();
+        renderLogs();
+        renderStreaks();
+        renderRedemptions();
+        renderAddPoints();
+        renderPointHistory();
+        if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
+        if (isRefresh) toast("Updated");
+      } catch (err) {
+        if (err.message !== "unauthorized") toast("Failed to load: " + err.message, true);
+      }
+    }
+
+    // ── Yesterday helpers ──
+    function yesterdayStr() {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const y = d.getFullYear();
+      const mo = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${mo}-${day}`;
+    }
+
+    function isWeekendDate(dateStr) {
+      if (!dateStr) return false;
+      const d = new Date(dateStr + "T12:00:00Z");
+      const day = d.getUTCDay();
+      return day === 0 || day === 5 || day === 6;  // Sun/Fri/Sat → matches backend WEEKEND_DAYS {4,5,6}
+    }
+
+    const NCNS_SET = new Set(["no_call_no_show", "ncns"]);
+    const CALL_IN_SET = new Set(["called_in", "call_in", "call-in"]);
+
+    function logBasePoints(l) {
+      const s = (l.status || "").toLowerCase().trim();
+      if (NCNS_SET.has(s)) return "ncns";
+      if (CALL_IN_SET.has(s)) return 2.0;
+      const late = l.minutes_late;
+      if (late !== null && late !== undefined && late > 0) return late <= 60 ? 1.0 : 2.0;
+      if (s === "late") return 1.0;
+      if (["late_major", "late_1hr", "late_2hr"].includes(s)) return 2.0;
+      return 0.0;
+    }
+
+    function logEventLabel(l) {
+      const s = (l.status || "").toLowerCase().trim();
+      if (NCNS_SET.has(s)) return "No Call / No Show";
+      if (CALL_IN_SET.has(s)) return "Called Out";
+      if (s === "late" || s.startsWith("late_")) return "Late";
+      if (s === "covered_shift") return "Covered";
+      return l.status || "—";
+    }
+
+    // ── Render: Yesterday ──
+    function renderYesterday() {
+      const yest = yesterdayStr();
+      const dateLabel = new Date(yest + "T12:00:00Z").toLocaleDateString(undefined, {
+        weekday: "long", month: "long", day: "numeric",
+      });
+      $("#yesterdayDate").textContent = dateLabel;
+
+      const dayLogs = allLogs.filter((l) => l.date === yest);
+      const weekend = isWeekendDate(yest);
+
+      const totalEmps = new Set(dayLogs.map((l) => l.employee_id)).size;
+
+      const lateCount = dayLogs.filter((l) => {
+        const pts = logBasePoints(l);
+        return pts !== "ncns" && typeof pts === "number" && pts > 0 &&
+          !CALL_IN_SET.has((l.status || "").toLowerCase().trim());
+      }).length;
+
+      const calledOut = dayLogs.filter((l) => CALL_IN_SET.has((l.status || "").toLowerCase().trim())).length;
+      const ncnsCount = dayLogs.filter((l) => NCNS_SET.has((l.status || "").toLowerCase().trim())).length;
+      const coveredCount = dayLogs.filter((l) => (l.status || "").toLowerCase() === "covered_shift").length;
+
+      $("#yesterdayCards").innerHTML = `
+        <div class="card"><div class="num">${totalEmps}</div><div class="lbl">Had shifts</div></div>
+        <div class="card flag"><div class="num">${lateCount}</div><div class="lbl">Late</div></div>
+        <div class="card flag"><div class="num">${calledOut}</div><div class="lbl">Called out</div></div>
+        <div class="card danger"><div class="num">${ncnsCount}</div><div class="lbl">No call / no show</div></div>
+        <div class="card ok"><div class="num">${coveredCount}</div><div class="lbl">Covered shifts</div></div>
+      `;
+
+      const violations = dayLogs.filter((l) => {
+        const pts = logBasePoints(l);
+        return pts === "ncns" || (typeof pts === "number" && pts > 0);
+      });
+
+      const wrap = $("#yesterdayViolationsWrap");
+      if (!violations.length) {
+        wrap.innerHTML = emptyState("✅", "No violations yesterday.");
+        return;
+      }
+
+      violations.sort((a, b) => {
+        const pa = logBasePoints(a), pb = logBasePoints(b);
+        const va = pa === "ncns" ? 99 : (weekend ? pa * 2 : pa);
+        const vb = pb === "ncns" ? 99 : (weekend ? pb * 2 : pb);
+        return vb - va;
+      });
+
+      wrap.innerHTML = tableHTML(
+        ["Employee", "Store", "Event", "Points"],
+        violations.map((l) => {
+          const name = esc(l.employee_name || empNames[l.employee_id] || l.employee_id);
+          const store = esc(l.employee_store || "—");
+          const pts = logBasePoints(l);
+          const finalPts = pts === "ncns" ? null : (weekend ? pts * 2 : pts);
+          const ptsCell = pts === "ncns"
+            ? '<span class="pill stage-term">NCNS</span>'
+            : `<strong>${finalPts}</strong>`;
+          return `<tr>
+            <td><div class="name">${name}</div></td>
+            <td>${store}</td>
+            <td><span class="pill ${statusPillForLog(l.status)}">${esc(logEventLabel(l))}</span></td>
+            <td>${ptsCell}</td>
+          </tr>`;
+        }).join("")
+      );
+    }
+
+    // ── Render: Overview ──
+    function renderOverview() {
+      const total = stats.length;
+      const flagged = stats.filter(isFlagged);
+      const ncns = stats.filter((s) => s.has_ncns).length;
+      const term = stats.filter((s) => (s.disciplinary_stage || "").toLowerCase().includes("termination")).length;
+      const win = stats[0] ? stats[0].window_days : null;
+      $("#windowNote").textContent = win ? `Last ${win} days` : "";
+
+      $("#summaryCards").innerHTML = `
+        <div class="card"><div class="num">${total}</div><div class="lbl">Total employees</div></div>
+        <div class="card flag"><div class="num">${flagged.length}</div><div class="lbl">Flagged</div></div>
+        <div class="card danger"><div class="num">${ncns}</div><div class="lbl">No call / no show</div></div>
+        <div class="card danger"><div class="num">${term}</div><div class="lbl">At termination</div></div>
+      `;
+
+      const wrap = $("#flaggedWrap");
+      if (!flagged.length) {
+        wrap.innerHTML = emptyState("✅", "Everyone is in good standing.");
+        return;
+      }
+      flagged.sort((a, b) => b.active_points - a.active_points);
+      wrap.innerHTML = tableHTML(
+        ["Employee", "Points", "Stage"],
+        flagged.map((r) => `
+          <tr>
+            <td><div class="name">${esc(r.name)}</div><div class="sub">${esc(r.position || "")}${r.store ? " · " + esc(r.store) : ""}</div></td>
+            <td class="points">${r.active_points}</td>
+            <td><span class="pill ${stageClass(r.disciplinary_stage)}">${esc(r.disciplinary_stage)}</span></td>
+          </tr>`).join("")
+      );
+    }
+
+    // ── Render: Employees ──
+    function renderEmployees() {
+      $("#empCount").textContent = `${stats.length} total`;
+      // populate stage filter once
+      const stageSel = $("#stageFilter");
+      const stagesSeen = Array.from(new Set(stats.map((s) => s.disciplinary_stage).filter(Boolean)));
+      const current = stageSel.value;
+      stageSel.innerHTML = '<option value="">All stages</option>' +
+        stagesSeen.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+      stageSel.value = current;
+
+      const filter = stageSel.value;
+      let rows = [...stats].sort((a, b) => b.active_points - a.active_points);
+      if (filter) rows = rows.filter((r) => r.disciplinary_stage === filter);
+
+      const wrap = $("#employeesWrap");
+      if (!rows.length) { wrap.innerHTML = emptyState("👥", "No employees match."); return; }
+      wrap.innerHTML = tableHTML(
+        ["Employee", "Store", "Points", "Stage"],
+        rows.map((r) => `
+          <tr>
+            <td><div class="name">${esc(r.name)}</div><div class="sub">${esc(r.position || "—")}</div></td>
+            <td>${esc(r.store || "—")}</td>
+            <td class="points">${r.active_points}</td>
+            <td><span class="pill ${stageClass(r.disciplinary_stage)}">${esc(r.disciplinary_stage)}</span></td>
+          </tr>`).join("")
+      );
+    }
+    $("#stageFilter").addEventListener("change", renderEmployees);
+
+    // ── Render: Logs ──
+    function renderLogs() {
+      $("#logCount").textContent = `${logs.length} shown`;
+
+      const wrap = $("#logsWrap");
+      if (!logs.length) { wrap.innerHTML = emptyState("🗓️", "No attendance logs."); return; }
+      wrap.innerHTML = tableHTML(
+        ["Date", "Employee", "Status", "In / Out", "Late", "Hours", "Actions"],
+        logs.map((l) => {
+          const ncns = isNcnsLog(l);
+          return `
+          <tr>
+            <td>${esc(l.date || "—")}</td>
+            <td><div class="name">${esc(empNames[l.employee_id] || l.employee_id)}</div></td>
+            <td>${l.status ? `<span class="pill ${statusPillForLog(l.status)}">${esc(l.status)}</span>` : "—"}</td>
+            <td>${esc(l.clock_in || "—")} – ${esc(l.clock_out || "—")}</td>
+            <td>${l.minutes_late != null ? esc(l.minutes_late) + "m" : "—"}</td>
+            <td>${l.hours != null ? esc(l.hours) : "—"}</td>
+            <td style="white-space:nowrap;padding-right:10px">
+              ${ncns ? `<button class="btn btn-sm btn-warn" style="margin-right:6px" data-log-action="override" data-log-id="${l.id}">Covered</button>` : ""}
+              <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-log-action="calloff" data-log-id="${l.id}" data-log-date="${l.date || ""}">Mark as call-off</button>
+              <button class="btn btn-sm btn-ghost" data-log-action="exempt" data-log-id="${l.id}">Exempt</button>
+            </td>
+          </tr>`;
+        }).join("")
+      );
+    }
+
+    // ── Render: Streaks ──
+    function renderStreaks() {
+      const wrap = $("#streaksWrap");
+      if (!streaks.length) {
+        wrap.innerHTML = emptyState("🔥", "No active streaks yet.");
+        return;
+      }
+      wrap.innerHTML = tableHTML(
+        ["#", "Name", "Store", "Consecutive Shifts"],
+        streaks.map((s, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td><div class="name">${esc(s.name || s.employee_id)}</div></td>
+            <td>${esc(s.store || "—")}</td>
+            <td>🔥 ${esc(s.streak)}</td>
+          </tr>`
+        ).join("")
+      );
+    }
+
+    async function applyLogFilters() {
+      const dateFrom = $("#logDateFrom").value;
+      const dateTo   = $("#logDateTo").value;
+      const store = $("#logStoreFilter").value;
+      const status = $("#logStatusFilter").value;
+      const params = new URLSearchParams();
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo)   params.set("date_to",   dateTo);
+      if (store) params.set("store", store);
+      if (status) params.set("status", status);
+      const qs = params.toString();
+      try {
+        logs = await api("/logs" + (qs ? "?" + qs : ""));
+        renderLogs();
+      } catch (err) {
+        if (err.message !== "unauthorized") toast("Filter failed: " + err.message, true);
+      }
+    }
+
+    function clearLogFilters() {
+      $("#logDateFrom").value = "";
+      $("#logDateTo").value = "";
+      $("#logStoreFilter").value = "";
+      $("#logStatusFilter").value = "";
+      logs = [...allLogs];
+      renderLogs();
+    }
+
+    $("#logDateFrom").addEventListener("change", applyLogFilters);
+    $("#logDateTo").addEventListener("change", applyLogFilters);
+    $("#logStoreFilter").addEventListener("change", applyLogFilters);
+    $("#logStatusFilter").addEventListener("change", applyLogFilters);
+    $("#logClearBtn").addEventListener("click", clearLogFilters);
+
+    function isNcnsLog(l) {
+      const s = (l.status || "").toLowerCase();
+      return s.includes("ncns") || s.includes("no_call");
+    }
+
+    function statusPillForLog(status) {
+      const s = (status || "").toLowerCase();
+      if (s.includes("ncns") || s.includes("no_call")) return "status-rejected";
+      if (s.includes("late") || s.includes("call")) return "status-pending";
+      return "status-completed";
+    }
+
+    // ── Log actions (event delegation) ──
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-log-action]");
+      if (!btn || btn.disabled) return;
+      const action = btn.dataset.logAction;
+      const id = btn.dataset.logId;
+      if (action === "exempt") openExemptModal(id, btn);
+      else if (action === "override") handleLogOverride(id, btn);
+      else if (action === "calloff") handleLogCallOff(id, btn);
+    });
+
+    function openExemptModal(id, btn) {
+      _exemptId = id;
+      _exemptBtn = btn;
+      btn.disabled = true;
+      $("#exemptReason").value = "";
+      $("#exemptError").style.display = "none";
+      $("#exemptModal").style.display = "flex";
+      setTimeout(() => $("#exemptReason").focus(), 50);
+    }
+
+    $("#exemptCancelBtn").addEventListener("click", () => {
+      $("#exemptModal").style.display = "none";
+      if (_exemptBtn) _exemptBtn.disabled = false;
+      _exemptId = null;
+      _exemptBtn = null;
+    });
+
+    $("#exemptConfirmBtn").addEventListener("click", async () => {
+      const reason = ($("#exemptReason").value || "").trim();
+      const errEl = $("#exemptError");
+      if (!reason) {
+        errEl.textContent = "A reason is required before exempting this entry.";
+        errEl.style.display = "block";
+        return;
+      }
+      errEl.style.display = "none";
+      const id = _exemptId;
+      const confirmBtn = $("#exemptConfirmBtn");
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = "Saving…";
+      try {
+        const updated = await api("/logs/" + id, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "exempted", notes: reason }),
+        });
+        $("#exemptModal").style.display = "none";
+        const idx = logs.findIndex((l) => String(l.id) === String(id));
+        if (idx > -1) logs[idx] = updated;
+        const allIdx = allLogs.findIndex((l) => String(l.id) === String(id));
+        if (allIdx > -1) allLogs[allIdx] = updated;
+        stats = await api("/stats");
+        renderLogs();
+        renderYesterday();
+        renderOverview();
+        renderEmployees();
+        toast("Entry exempted — points no longer count toward total");
+        _exemptId = null;
+        _exemptBtn = null;
+      } catch (err) {
+        errEl.textContent = err.message || "Exemption failed. Please try again.";
+        errEl.style.display = "block";
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Exempt entry";
+      }
+    });
+
+    async function handleLogCallOff(id, btn) {
+      const date = btn.dataset.logDate;
+      const pts = isWeekendDate(date) ? 4 : 2;
+      if (!confirm(`Mark this entry as a call-off?\n\nPoints assigned: ${pts} (${isWeekendDate(date) ? "weekend rate" : "standard rate"}).\nStatus will be set to 'called_in'.`)) return;
+      btn.disabled = true;
+      btn.textContent = "…";
+      try {
+        const updated = await api("/logs/" + id, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "called_in", notes: "Marked as call-off by manager" }),
+        });
+        const idx = logs.findIndex((l) => String(l.id) === String(id));
+        if (idx > -1) logs[idx] = updated;
+        const allIdx = allLogs.findIndex((l) => String(l.id) === String(id));
+        if (allIdx > -1) allLogs[allIdx] = updated;
+        renderLogs();
+        renderYesterday();
+        toast(`Marked as call-off — ${pts} point${pts !== 1 ? "s" : ""} assigned`);
+      } catch (err) {
+        if (err.message !== "unauthorized") toast("Update failed: " + err.message, true);
+        btn.disabled = false;
+        btn.textContent = "Mark as call-off";
+      }
+    }
+
+    async function handleLogOverride(id, btn) {
+      if (!confirm("Override this NCNS as a covered shift?\n\nThis will change the status to 'covered_shift' and set points to 0.")) return;
+      btn.disabled = true;
+      btn.textContent = "…";
+      try {
+        const updated = await api("/logs/" + id, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "covered_shift", minutes_late: 0 }),
+        });
+        const idx = logs.findIndex((l) => String(l.id) === String(id));
+        if (idx > -1) logs[idx] = updated;
+        const allIdx = allLogs.findIndex((l) => String(l.id) === String(id));
+        if (allIdx > -1) allLogs[allIdx] = updated;
+        renderLogs();
+        renderYesterday();
+        toast("NCNS overridden — points cleared");
+      } catch (err) {
+        if (err.message !== "unauthorized") toast("Override failed: " + err.message, true);
+        btn.disabled = false;
+        btn.textContent = "Covered";
+      }
+    }
+
+    // ── Shared render utils ──
+    function tableHTML(headers, bodyRows) {
+      return `<div class="scroll-x"><table>
+        <thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table></div>`;
+    }
+    function emptyState(icon, msg) {
+      return `<div class="empty"><div class="big">${icon}</div>${esc(msg)}</div>`;
+    }
+
+    // ── Add Points (supervisor) ──
+    function renderAddPoints() {
+      // Populate employee dropdown — all employees
+      const empSel = $("#apEmp");
+      if (empSel) {
+        const cur = empSel.value;
+        const sorted = [...employees].sort((a, b) => a.name.localeCompare(b.name));
+        empSel.innerHTML = '<option value="">Select employee…</option>' +
+          sorted.map((e) => `<option value="${esc(e.employee_id)}">${esc(e.name)}</option>`).join("");
+        if (cur) empSel.value = cur;
+      }
+      const manual = allLogs.filter((l) => (l.status || "").toLowerCase() === "manual_addition");
+      const wrap = $("#apHistoryWrap");
+      const cnt = $("#apCount");
+      if (cnt) cnt.textContent = manual.length ? `${manual.length} entr${manual.length === 1 ? "y" : "ies"}` : "";
+      if (!wrap) return;
+      if (!manual.length) { wrap.innerHTML = emptyState("📋", "No manual entries yet"); return; }
+      wrap.innerHTML = tableHTML(
+        ["Date added", "Employee", "Reason", "Points", "Incident date", "Notes", ""],
+        manual.map((l) => `<tr>
+          <td>${esc((l.created_at || "").slice(0, 10))}</td>
+          <td>${esc(l.employee_name || empNames[l.employee_id] || l.employee_id)}</td>
+          <td>${esc(l.clock_in || "—")}</td>
+          <td class="points" style="color:var(--red)">+${l.manual_points ?? "?"}</td>
+          <td>${esc(l.date || "—")}</td>
+          <td>${esc(l.notes || "—")}</td>
+          <td><button class="btn btn-sm btn-ghost" data-manual-delete="${l.id}">Remove</button></td>
+        </tr>`).join("")
+      );
+    }
+
+    // ── Reset Points (owner only) ──
+    function populateResetStoreSelect() {
+      const sel = $("#resetStoreSelect");
+      if (!sel) return;
+      const cur = sel.value;
+      const stores = storeList.length
+        ? storeList.map((s) => s.store)
+        : [...new Set(employees.map((e) => e.store).filter(Boolean))].sort();
+      sel.innerHTML = '<option value="">Select store…</option>' +
+        stores.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+      if (cur) sel.value = cur;
+    }
+
+    function renderPointResets() {
+      const wrap = $("#pointResetsWrap");
+      if (!wrap) return;
+      if (!pointResets.length) { wrap.innerHTML = emptyState("🔄", "No resets have been made"); return; }
+      wrap.innerHTML = tableHTML(
+        ["Store", "Reset date", "Reason", "By", "When"],
+        pointResets.map((r) => `<tr>
+          <td>${esc(r.store)}</td>
+          <td>${esc(r.reset_date)}</td>
+          <td>${esc(r.reason || "—")}</td>
+          <td>${esc(r.created_by || "—")}</td>
+          <td>${esc((r.created_at || "").replace("T", " ").slice(0, 16))}</td>
+        </tr>`).join("")
+      );
+    }
+
+    async function loadPointResets() {
+      try {
+        pointResets = await api("/point-resets");
+        renderPointResets();
+      } catch (err) {
+        if (err.message !== "unauthorized") toast("Reset history load failed: " + err.message, true);
+      }
+    }
+
+    const resetSubmitBtn = $("#resetSubmitBtn");
+    if (resetSubmitBtn) {
+      resetSubmitBtn.addEventListener("click", async () => {
+        const store = $("#resetStoreSelect").value;
+        const reason = ($("#resetReason").value || "").trim();
+        const errEl = $("#resetFormError");
+        errEl.classList.add("hidden");
+        if (!store || !reason) {
+          errEl.textContent = "Select a store and enter a reason.";
+          errEl.classList.remove("hidden");
+          return;
+        }
+        if (!confirm(`Reset ALL active points for "${store}" back to zero?\n\nThis cannot be undone. Reason: ${reason}`)) {
+          return;
+        }
+        resetSubmitBtn.disabled = true; resetSubmitBtn.textContent = "Resetting…";
+        try {
+          await api(`/stores/${encodeURIComponent(store)}/reset-points`, {
+            method: "POST",
+            body: JSON.stringify({ reason }),
+          });
+          toast(`Points reset for ${store}`);
+          $("#resetReason").value = "";
+          const statsData = await api("/stats");
+          stats = statsData;
+          renderOverview();
+          renderYesterday();
+          renderEmployees();
+          renderPointHistory();
+          await loadPointResets();
+        } catch (err) {
+          errEl.textContent = err.message || "Could not reset points.";
+          errEl.classList.remove("hidden");
+        } finally {
+          resetSubmitBtn.disabled = false; resetSubmitBtn.textContent = "Reset all points for this store";
+        }
+      });
+    }
+
+    $("#addPointsForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const employee_id = $("#apEmp").value;
+      const event_type  = ($("#apEvent").value || "").trim();
+      const pts         = parseFloat($("#apPoints").value);
+      const date        = $("#apDate").value;
+      const notes       = ($("#apNotes").value || "").trim();
+      const errEl = $("#apFormError");
+      errEl.classList.add("hidden");
+      if (!employee_id || !event_type || !pts || pts <= 0 || !date || !notes) {
+        errEl.textContent = "All fields are required and points must be greater than 0.";
+        errEl.classList.remove("hidden");
+        return;
+      }
+      const btn = $("#apSubmitBtn");
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        await api("/logs", {
+          method: "POST",
+          body: JSON.stringify({
+            employee_id, status: "manual_addition",
+            clock_in: event_type, date, notes,
+            manual_points: pts,
+          }),
+        });
+        toast(`+${pts} point${pts !== 1 ? "s" : ""} added for ${empNames[employee_id] || employee_id}`);
+        e.target.reset();
+        const [statsData, logsData] = await Promise.all([api("/stats"), api("/logs")]);
+        stats = statsData;
+        allLogs = logsData;
+        logs = [...allLogs];
+        renderOverview();
+        renderYesterday();
+        renderEmployees();
+        renderAddPoints();
+      } catch (err) {
+        errEl.textContent = err.message || "Could not add points.";
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Add points";
+      }
+    });
+
+    // Remove manual entry delegation
+    document.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-manual-delete]");
+      if (!btn || btn.disabled) return;
+      const id = btn.dataset.manualDelete;
+      if (!confirm("Remove this manual point entry? This cannot be undone.")) return;
+      btn.disabled = true;
+      try {
+        await api(`/logs/${id}`, { method: "DELETE" });
+        toast("Entry removed");
+        const [statsData, logsData] = await Promise.all([api("/stats"), api("/logs")]);
+        stats = statsData;
+        allLogs = logsData;
+        logs = [...allLogs];
+        renderOverview();
+        renderYesterday();
+        renderEmployees();
+        renderAddPoints();
+      } catch (err) {
+        toast(err.message || "Could not remove entry", true);
+        btn.disabled = false;
+      }
+    });
+
+    // ── Point History (all roles) ──
+    function fmtEventLabel(status, log) {
+      const s = (status || "").toLowerCase().trim();
+      if (s === "manual_addition") {
+        const reason = (log && log.clock_in) ? ` — ${log.clock_in}` : "";
+        return `<span class="pill stage-orange">Manual</span>${esc(reason)}`;
+      }
+      if (s === "no_call_no_show" || s === "ncns") return `<span class="pill stage-term">No call / no show</span>`;
+      if (s === "called_in" || s === "call_in" || s === "call-in") return "Called out";
+      if (s === "late_major" || s === "late_2hr") return "Late (major, &gt;1 hr)";
+      if (s === "late_1hr" || s === "late") return "Late";
+      if (s === "absent") return "Absent";
+      return esc(status || "—");
+    }
+
+    function renderPointHistory() {
+      const sel = $("#phEmp");
+      if (!sel) return;
+      const cur = sel.value;
+      const sorted = [...employees].sort((a, b) => a.name.localeCompare(b.name));
+      sel.innerHTML = '<option value="">Select a team member…</option>' +
+        sorted.map(e => `<option value="${esc(e.employee_id)}">${esc(e.name)}</option>`).join("");
+      if (cur) { sel.value = cur; }
+    }
+
+    $("#phEmp").addEventListener("change", async () => {
+      const eid = $("#phEmp").value;
+      const wrap = $("#phResults");
+      if (!eid) {
+        wrap.innerHTML = `<div class="empty"><div class="big">👤</div>Select a team member above to see their point history</div>`;
+        return;
+      }
+      wrap.innerHTML = `<div class="loading"><span class="spinner"></span></div>`;
+      try {
+        const data = await api(`/stats?employee_id=${encodeURIComponent(eid)}`);
+        const emp = data[0];
+        if (!emp) { wrap.innerHTML = emptyState("❓", "Employee not found"); return; }
+        const pl = emp.point_log || [];
+
+        // Build a log lookup for cross-referencing manual entries
+        const logMap = {};
+        allLogs.forEach(l => { logMap[l.id] = l; });
+
+        // Determine stage badge class
+        const stageClass = (() => {
+          const s = (emp.stage || "").toLowerCase();
+          if (s.includes("good")) return "stage-good";
+          if (s.includes("reduced")) return "stage-warn";
+          if (s === "written warning") return "stage-orange";
+          if (s.includes("final")) return "stage-red";
+          if (s.includes("termination") || s === "automatic termination") return "stage-term";
+          return "stage-warn";
+        })();
+
+        // Compute running totals (pl is chronological ASC)
+        let running = 0;
+        const rows = pl.map(r => {
+          const pts = typeof r.points_applied === "number" ? r.points_applied : 0;
+          running += pts;
+          return { ...r, runningTotal: running };
+        });
+
+        if (!rows.length) {
+          wrap.innerHTML = `
+            <div style="margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="font-weight:600">${esc(emp.name)}</span>
+              <span class="pill ${stageClass}">${esc(emp.stage)}</span>
+              <span class="muted" style="margin-left:auto">0 active pts (90-day window)</span>
+            </div>
+            ${emptyState("📋", "No point events in the last 90 days")}`;
+          return;
+        }
+
+        // Render newest first
+        const rowsDesc = [...rows].reverse();
+        wrap.innerHTML = `
+          <div style="margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-weight:600">${esc(emp.name)}</span>
+            <span class="pill ${stageClass}">${esc(emp.stage)}</span>
+            <span class="muted" style="margin-left:auto"><strong>${emp.active_points.toFixed(1)}</strong> active pts (90-day window)</span>
+          </div>
+          ${tableHTML(
+            ["Date", "Event", "Points", "Running total"],
+            rowsDesc.map(r => {
+              const log = logMap[r.log_id];
+              const isManual = (r.status || "").toLowerCase() === "manual_addition";
+              const isNcns  = r.points_applied === "Automatic Termination";
+              const ptsCell = isNcns
+                ? `<span class="pill stage-term">NCNS</span>`
+                : `<span style="color:var(--red)">+${r.points_applied}${r.weekend && !isManual ? `<span class="muted" style="font-size:.8em"> ×2</span>` : ""}</span>`;
+              const totalCell = isNcns ? "—" : r.runningTotal.toFixed(1);
+              return `<tr>
+                <td>${esc(r.date || "—")}</td>
+                <td>${fmtEventLabel(r.status, log)}</td>
+                <td>${ptsCell}</td>
+                <td>${totalCell}</td>
+              </tr>`;
+            }).join("")
+          )}`;
+      } catch (err) {
+        $("#phResults").innerHTML = `<div class="error">${esc(err.message || "Failed to load history")}</div>`;
+      }
+    });
+
+    // ── Point Redemptions ──
+    function renderRedemptionList(list, wrapperId, showActions) {
+      const wrap = $(wrapperId);
+      if (!wrap) return;
+      if (!list.length) { wrap.innerHTML = emptyState("✓", "Nothing here"); return; }
+      wrap.innerHTML = tableHTML(
+        ["Employee", "Type", "Points", "Date", "Notes", "Submitted by", ...(showActions ? ["Action"] : [])],
+        list.map((r) => `<tr>
+          <td>${esc(r.employee_name)}</td>
+          <td>${esc(REDEMPTION_LABELS[r.redemption_type] || r.redemption_type)}</td>
+          <td class="points" style="color:var(--green)">−${r.points_removed}</td>
+          <td>${esc(r.date)}</td>
+          <td>${esc(r.notes || "—")}</td>
+          <td>${esc(r.submitted_by || "—")}</td>
+          ${showActions ? `<td style="white-space:nowrap">
+            <button class="btn btn-sm btn-green" data-redemption-action="approve" data-redemption-id="${r.id}">Approve</button>
+            <button class="btn btn-sm btn-red" style="margin-left:4px" data-redemption-action="deny" data-redemption-id="${r.id}">Deny</button>
+          </td>` : ""}
+        </tr>`).join("")
+      );
+    }
+
+    function renderRedemptions() {
+      // Populate employee dropdown — only employees with >= 1 active point
+      const empSel = $("#redemptionEmp");
+      if (empSel) {
+        const eligible = stats.filter((s) => s.active_points >= 1).sort((a, b) => a.name.localeCompare(b.name));
+        const cur = empSel.value;
+        empSel.innerHTML = eligible.length
+          ? '<option value="">Select employee…</option>' + eligible.map((s) =>
+              `<option value="${esc(s.employee_id)}">${esc(s.name)} (${s.active_points} pts)</option>`).join("")
+          : '<option value="" disabled>No employees with active points</option>';
+        if (cur) empSel.value = cur;
+      }
+      const pending  = redemptions.filter((r) => r.status === "pending");
+      const approved = redemptions.filter((r) => r.status === "approved");
+      const denied   = redemptions.filter((r) => r.status === "denied");
+      renderRedemptionList(pending,  "#redemptionsPendingWrap",  true);
+      renderRedemptionList(approved, "#redemptionsApprovedWrap", false);
+      renderRedemptionList(denied,   "#redemptionsDeniedWrap",   false);
+    }
+
+    $("#redemptionForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const employee_id     = $("#redemptionEmp").value;
+      const redemption_type = $("#redemptionType").value;
+      const date            = $("#redemptionDate").value;
+      const notes           = ($("#redemptionNotes").value || "").trim() || null;
+      const errEl = $("#redemptionFormError");
+      errEl.classList.add("hidden");
+
+      if (!employee_id || !redemption_type || !date) return;
+
+      // Client-side guard: don't allow going below 0
+      const emp = stats.find((s) => s.employee_id === employee_id);
+      const pts = REDEMPTION_POINTS[redemption_type] || 0;
+      if (emp && pts > emp.active_points) {
+        errEl.textContent = `Cannot submit — ${emp.name} only has ${emp.active_points} active point(s), but this redemption would remove ${pts}.`;
+        errEl.classList.remove("hidden");
+        return;
+      }
+
+      const btn = $("#redemptionSubmitBtn");
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        await api("/redemptions", { method: "POST", body: JSON.stringify({ employee_id, redemption_type, date, notes }) });
+        toast("Redemption submitted — pending owner approval");
+        e.target.reset();
+        redemptions = await api("/redemptions");
+        renderRedemptions();
+      } catch (err) {
+        errEl.textContent = err.message || "Could not submit redemption.";
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Submit for approval";
+      }
+    });
+
+    // Approve / deny delegation
+    document.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-redemption-action]");
+      if (!btn || btn.disabled) return;
+      const action = btn.dataset.redemptionAction;
+      const rid    = btn.dataset.redemptionId;
+      const label  = action === "approve" ? "Approve" : "Deny";
+      if (!confirm(`${label} this redemption?`)) return;
+      btn.disabled = true;
+      try {
+        await api(`/redemptions/${rid}`, { method: "PATCH", body: JSON.stringify({ action }) });
+        toast(action === "approve" ? "Approved — points will be deducted" : "Redemption denied");
+        // Reload stats (points changed) + redemptions list
+        const [statsData, redemptionData] = await Promise.all([api("/stats"), api("/redemptions")]);
+        stats = statsData;
+        redemptions = redemptionData;
+        renderOverview();
+        renderYesterday();
+        renderEmployees();
+        renderRedemptions();
+      } catch (err) {
+        toast(err.message || "Action failed", true);
+        btn.disabled = false;
+      }
+    });
+
+    // ── Admin (owner only) ──
+    async function loadAdmin() {
+      try {
+        const [u, s] = await Promise.all([api("/users"), api("/stores")]);
+        users = u; storeList = s;
+        // Populate the "store account" dropdown in the create-user form
+        const storeSel = $("#userStore");
+        if (storeSel) {
+          storeSel.innerHTML = '<option value="">Select store…</option>' +
+            storeList.map((st) => `<option value="${esc(st.store)}">${esc(st.store)}${st.name ? " · " + esc(st.name) : ""}</option>`).join("");
+        }
+        renderAssignments();
+        renderUsers();
+        populateResetStoreSelect();
+      } catch (err) {
+        if (err.message !== "unauthorized") toast("Admin load failed: " + err.message, true);
+      }
+    }
+
+    function dmUsers() { return users.filter((u) => u.role === "dm"); }
+
+    function renderAssignments() {
+      const wrap = $("#assignmentsWrap");
+      if (!wrap) return;
+      if (!storeList.length) { wrap.innerHTML = emptyState("🏪", "No stores yet"); return; }
+      const dms = dmUsers();
+      wrap.innerHTML = tableHTML(
+        ["Store", "District Manager"],
+        storeList.map((st) => {
+          const opts = '<option value="">— Unassigned —</option>' + dms.map((d) =>
+            `<option value="${d.id}" ${String(st.dm_user_id) === String(d.id) ? "selected" : ""}>${esc(d.username)}</option>`).join("");
+          return `<tr>
+            <td><div class="name">${esc(st.store)}</div><div class="sub">${esc(st.name || "")}</div></td>
+            <td><select data-assign-store="${esc(st.store)}">${opts}</select></td>
+          </tr>`;
+        }).join("")
+      );
+    }
+
+    function renderUsers() {
+      const wrap = $("#usersWrap");
+      const cnt = $("#userCount");
+      if (cnt) cnt.textContent = users.length ? `${users.length} account${users.length === 1 ? "" : "s"}` : "";
+      if (!wrap) return;
+      if (!users.length) { wrap.innerHTML = emptyState("👤", "No accounts yet"); return; }
+      wrap.innerHTML = tableHTML(
+        ["Username", "Role", "Scope", "Actions"],
+        users.map((u) => {
+          let scope = "—";
+          if (u.role === "owner") scope = "All stores";
+          else if (u.role === "store") scope = esc(u.store || "—");
+          else if (u.role === "dm") scope = (u.dm_stores && u.dm_stores.length) ? esc(u.dm_stores.join(", ")) : "(none assigned)";
+          return `<tr>
+            <td><div class="name">${esc(u.username)}</div></td>
+            <td>${esc(ROLE_LABELS[u.role] || u.role)}</td>
+            <td>${scope}</td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-user-action="resetpw" data-user-id="${u.id}" data-user-name="${esc(u.username)}">Reset password</button>
+              <button class="btn btn-sm btn-ghost" data-user-action="delete" data-user-id="${u.id}" data-user-name="${esc(u.username)}">Delete</button>
+            </td>
+          </tr>`;
+        }).join("")
+      );
+    }
+
+    // Show/hide the store picker depending on the chosen role
+    $("#userRole").addEventListener("change", (e) => {
+      $("#userStoreField").classList.toggle("hidden", e.target.value !== "store");
+    });
+
+    // Create user
+    $("#userForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = ($("#userUsername").value || "").trim();
+      const role     = $("#userRole").value;
+      const store    = $("#userStore").value;
+      const password = $("#userPassword").value;
+      const errEl = $("#userFormError");
+      errEl.classList.add("hidden");
+      if (!username || !role || !password) {
+        errEl.textContent = "Username, role, and password are required."; errEl.classList.remove("hidden"); return;
+      }
+      if (role === "store" && !store) {
+        errEl.textContent = "A store account needs a store selected."; errEl.classList.remove("hidden"); return;
+      }
+      const btn = $("#userSubmitBtn");
+      btn.disabled = true; btn.textContent = "Creating…";
+      try {
+        await api("/users", { method: "POST", body: JSON.stringify({ username, role, store: role === "store" ? store : null, password }) });
+        toast(`Account "${username}" created`);
+        e.target.reset();
+        $("#userStoreField").classList.add("hidden");
+        await loadAdmin();
+      } catch (err) {
+        errEl.textContent = err.message || "Could not create account."; errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Create account";
+      }
+    });
+
+    // Assignment change (event delegation)
+    document.addEventListener("change", async (e) => {
+      const sel = e.target.closest("[data-assign-store]");
+      if (!sel) return;
+      const store = sel.dataset.assignStore;
+      const dm_user_id = sel.value ? parseInt(sel.value, 10) : null;
+      sel.disabled = true;
+      try {
+        await api("/stores/" + encodeURIComponent(store), { method: "PATCH", body: JSON.stringify({ dm_user_id }) });
+        toast(`Store ${store} ${dm_user_id ? "assigned" : "unassigned"}`);
+        await loadAdmin();
+      } catch (err) {
+        toast(err.message || "Assignment failed", true);
+        sel.disabled = false;
+      }
+    });
+
+    // User actions (reset password / delete) via delegation
+    document.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-user-action]");
+      if (!btn || btn.disabled) return;
+      const action = btn.dataset.userAction;
+      const id = btn.dataset.userId;
+      const name = btn.dataset.userName;
+      if (action === "resetpw") {
+        const pw = prompt(`New password for "${name}":`);
+        if (!pw) return;
+        btn.disabled = true;
+        try {
+          await api("/users/" + id, { method: "PATCH", body: JSON.stringify({ password: pw }) });
+          toast(`Password reset for ${name}`);
+        } catch (err) { toast(err.message || "Reset failed", true); }
+        finally { btn.disabled = false; }
+      } else if (action === "delete") {
+        if (!confirm(`Delete account "${name}"? This cannot be undone.`)) return;
+        btn.disabled = true;
+        try {
+          await api("/users/" + id, { method: "DELETE" });
+          toast(`Account "${name}" deleted`);
+          await loadAdmin();
+        } catch (err) { toast(err.message || "Delete failed", true); btn.disabled = false; }
+      }
+    });
+
+    // ── Boot ──
+    if (getToken() && getRole()) {
+      showApp();
+      loadAll();
+    } else {
+      showLogin();
+    }
+  </script>
+</body>
+</html>

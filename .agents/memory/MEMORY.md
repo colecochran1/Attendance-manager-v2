@@ -1,0 +1,1 @@
+- [Production read-only SQL debugging quirks](production-sql-debugging.md) — silent failure (only START TRANSACTION/ROLLBACK) on type mismatches; verify column types first

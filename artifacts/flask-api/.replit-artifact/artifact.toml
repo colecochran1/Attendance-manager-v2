@@ -1,0 +1,32 @@
+kind = "web"
+previewPath = "/"
+title = "Flask API"
+version = "1.0.0"
+id = "artifacts/flask-api"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20888
+
+[services.development]
+run = "cd artifacts/flask-api 2>/dev/null; exec gunicorn --bind 0.0.0.0:${PORT:-20888} --workers 2 --preload main:app"
+
+[services.production]
+
+[services.production.run]
+args = ["sh", "-c", "cd artifacts/flask-api 2>/dev/null; exec gunicorn --bind 0.0.0.0:${PORT:-20888} --workers 2 --preload main:app"]
+
+[services.production.run.env]
+PORT = "20888"
+
+[services.production.health.startup]
+path = "/api/healthz"
+
+[services.env]
+PORT = "20888"
