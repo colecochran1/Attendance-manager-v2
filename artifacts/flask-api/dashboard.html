@@ -121,6 +121,9 @@
     .role-readonly .supervisor-only { display: none !important; }
     body:not(.role-platform) .platform-only { display: none !important; }
     body.role-platform .org-owner-only { display: none !important; }
+    /* With an org selected in the switcher, the platform admin manages that
+       org's Pulse connection just like its owner would. */
+    body.role-platform.org-view-active .org-owner-only { display: block !important; }
 
     /* ── Data freshness ── */
     .fresh-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
@@ -147,6 +150,7 @@
     @media (max-width: 620px) { .rform-grid { grid-template-columns: 1fr; } }
     .field-label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: 5px; font-weight: 600; }
     .role-badge { font-size: .72rem; color: var(--dom-blue); padding: 3px 10px; background: rgba(0,100,145,.08); border: 1px solid rgba(0,100,145,.22); border-radius: 999px; letter-spacing: .03em; font-weight: 700; white-space: nowrap; }
+    .org-view-sel { font-size: .78rem; font-weight: 600; color: var(--dom-blue); padding: 4px 8px; max-width: 180px; background: rgba(0,100,145,.08); border: 1px solid rgba(0,100,145,.22); border-radius: 8px; cursor: pointer; }
     .error {
       color: #991b1b;
       background: #fef2f2;
@@ -480,6 +484,9 @@
           </div>
         </div>
         <div class="topbar-actions">
+          <select class="org-view-sel platform-only" id="orgViewSel" title="Organization view" aria-label="Organization view">
+            <option value="">All organizations</option>
+          </select>
           <span class="role-badge" id="roleBadge"></span>
           <button class="icon-btn" id="refreshBtn" title="Refresh" aria-label="Refresh">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
@@ -849,6 +856,7 @@
     const TOKEN_STORE = "attendance_dash_token";
     const ROLE_STORE  = "attendance_dash_role";
     const ORG_STORE   = "attendance_dash_org";
+    const ORG_VIEW_STORE = "attendance_dash_org_view"; // platform admin org switcher
     const API = "/api";
 
     // ── State ──
@@ -884,10 +892,16 @@
     const setRole  = (r) => sessionStorage.setItem(ROLE_STORE, r);
     const getOrg   = () => sessionStorage.getItem(ORG_STORE) || "";
     const setOrg   = (o) => sessionStorage.setItem(ORG_STORE, o || "");
+    const getOrgView = () => sessionStorage.getItem(ORG_VIEW_STORE) || "";
+    const setOrgView = (id) => {
+      if (id) sessionStorage.setItem(ORG_VIEW_STORE, id);
+      else sessionStorage.removeItem(ORG_VIEW_STORE);
+    };
     const clearSession = () => {
       sessionStorage.removeItem(TOKEN_STORE);
       sessionStorage.removeItem(ROLE_STORE);
       sessionStorage.removeItem(ORG_STORE);
+      sessionStorage.removeItem(ORG_VIEW_STORE);
     };
 
     let toastTimer;
@@ -917,6 +931,7 @@
 
     async function api(path, opts = {}) {
       const headers = Object.assign({ "X-Dashboard-Token": getToken() }, opts.headers || {});
+      if (isPlatform() && getOrgView()) headers["X-Org-View"] = getOrgView();
       if (opts.body) headers["Content-Type"] = "application/json";
       const res = await fetch(API + path, Object.assign({}, opts, { headers }));
       if (res.status === 401) {
@@ -971,10 +986,37 @@
       const pEl = $("#loginPassword");
       if (pEl) pEl.value = "";
     }
+    function updateBrandSub() {
+      const sub = $("#brandSub");
+      if (!sub) return;
+      if (isPlatform()) {
+        const sel = $("#orgViewSel");
+        const name = sel && sel.value ? sel.options[sel.selectedIndex].textContent : "";
+        sub.textContent = name || "Platform";
+        document.body.classList.toggle("org-view-active", !!getOrgView());
+      } else {
+        sub.textContent = getOrg() || "Attendance";
+      }
+    }
+    // Org switcher (platform admins): narrows every data view — stores, team,
+    // attendance, accounts — to one organization via the X-Org-View header.
+    async function populateOrgViewSel() {
+      if (!isPlatform()) return;
+      const sel = $("#orgViewSel");
+      if (!sel) return;
+      try {
+        const orgs = await api("/orgs");
+        sel.innerHTML = '<option value="">All organizations</option>' +
+          orgs.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("");
+        sel.value = getOrgView();
+        if (sel.value !== getOrgView()) setOrgView(""); // selected org was deleted
+        updateBrandSub();
+      } catch (_) {}
+    }
     function showApp() {
       applyRole(getRole());
-      const sub = $("#brandSub");
-      if (sub) sub.textContent = isPlatform() ? "Platform" : (getOrg() || "Attendance");
+      updateBrandSub();
+      if (isPlatform()) populateOrgViewSel();
       $("#login").classList.add("hidden");
       $("#app").classList.remove("hidden");
     }
@@ -1013,6 +1055,11 @@
     });
 
     $("#logoutBtn").addEventListener("click", () => { showLogin(); });
+    $("#orgViewSel").addEventListener("change", () => {
+      setOrgView($("#orgViewSel").value);
+      updateBrandSub();
+      loadAll();
+    });
     $("#refreshBtn").addEventListener("click", async () => {
       const btn = $("#refreshBtn");
       btn.classList.add("spin-active");
@@ -1929,7 +1976,10 @@
             orgSel.innerHTML = '<option value="">Select organization…</option>' +
               orgs.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("");
             if (cur) orgSel.value = cur;
+            else if (getOrgView()) orgSel.value = getOrgView();
           }
+          populateOrgViewSel(); // keep the header switcher in sync with new orgs
+          if (getOrgView()) api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
         } else {
           api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
         }

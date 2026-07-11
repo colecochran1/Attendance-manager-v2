@@ -352,6 +352,21 @@ HARDCODED_DM_STORE_ACCESS = {
 }
 
 
+def org_view_id():
+    """Optional org filter for platform-admin sessions: the X-Org-View header
+    (set by the dashboard's org switcher) narrows a platform admin's view to
+    one organization. Ignored for every other caller, including the API key,
+    so worker/import semantics are untouched."""
+    user = getattr(g, "user", None)
+    if user is None or user["role"] != "platform_admin":
+        return None
+    raw = request.headers.get("X-Org-View") or request.args.get("org_view")
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
 def allowed_stores():
     """Set of store numbers the caller may see, or None for full access
     (platform admin / API key). Org owners are scoped to their org's stores —
@@ -362,7 +377,13 @@ def allowed_stores():
     if user is None:
         g._allowed = None
     elif user["role"] == "platform_admin":
-        g._allowed = None
+        org_view = org_view_id()
+        if org_view:
+            cur = get_db().cursor()
+            cur.execute("SELECT store FROM stores WHERE org_id = %s", (org_view,))
+            g._allowed = {r["store"] for r in cur.fetchall()}
+        else:
+            g._allowed = None
     elif user["role"] == "owner":
         cur = get_db().cursor()
         cur.execute("SELECT store FROM stores WHERE org_id = %s", (user.get("org_id"),))
@@ -1420,6 +1441,11 @@ def users_collection():
         if caller_is_org_owner:
             where = "WHERE u.org_id = %s AND u.role != 'platform_admin' "
             params = [caller["org_id"]]
+        else:
+            org_view = org_view_id()
+            if org_view:
+                where = "WHERE u.org_id = %s "
+                params = [org_view]
         cur.execute(
             "SELECT u.id, u.username, u.role, u.store, u.org_id, o.name AS org_name, u.created_at, "
             "COALESCE(array_agg(s.store ORDER BY s.store) "
@@ -1615,7 +1641,7 @@ def _credentials_org_id():
     if not org_id:
         data = request.get_json(silent=True) or {}
         org_id = data.get("org_id")
-    return org_id
+    return org_id or org_view_id()
 
 
 @app.route("/api/org/pulse-credentials", methods=["GET", "POST", "DELETE"])
