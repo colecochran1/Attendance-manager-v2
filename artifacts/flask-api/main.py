@@ -37,7 +37,10 @@ _token_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="dashboard-auth
 LOGIN_FAIL_WINDOW = 300   # seconds
 LOGIN_MAX_FAILS = 10      # failed attempts per IP within the window
 
-ROLES = {"owner", "dm", "store"}
+# platform_admin = Slicework operator (cross-org); the other three live inside one org.
+ROLES = {"platform_admin", "owner", "dm", "store"}
+ORG_ROLES = {"owner", "dm", "store"}
+SUPERVISOR_ROLES = {"platform_admin", "owner"}
 
 
 def _client_ip():
@@ -212,6 +215,73 @@ def init_db():
                 "VALUES (%s, %s, 'owner') ON CONFLICT (username) DO NOTHING",
                 (owner_user, generate_password_hash(owner_pw)),
             )
+
+    # ── Multi-tenancy: organizations (franchisee groups) ────────────────────
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS orgs (
+            id          SERIAL PRIMARY KEY,
+            name        TEXT NOT NULL,
+            slug        TEXT UNIQUE NOT NULL,
+            created_at  TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+        "org_id INTEGER REFERENCES orgs(id) ON DELETE SET NULL"
+    )
+    cur.execute(
+        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS "
+        "org_id INTEGER REFERENCES orgs(id) ON DELETE SET NULL"
+    )
+    # Per-org Pulse (PWR) credentials. The password is RSA-encrypted with the
+    # scrape worker's PUBLIC key at submission time; this server never holds a
+    # decryption key, so the stored value is unreadable to the web app.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pulse_credentials (
+            id               SERIAL PRIMARY KEY,
+            org_id           INTEGER UNIQUE NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+            pwr_username     TEXT NOT NULL,
+            enc_password     TEXT NOT NULL,
+            status           TEXT DEFAULT 'pending',
+            status_detail    TEXT,
+            updated_by       TEXT,
+            updated_at       TIMESTAMP DEFAULT NOW(),
+            last_checked_at  TIMESTAMP
+        )
+    """)
+    # Scrape health ledger: one row per (org, store, business date) attempt,
+    # reported by the worker. Powers the in-app data-freshness display.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_runs (
+            id             SERIAL PRIMARY KEY,
+            org_id         INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+            store          TEXT NOT NULL,
+            run_date       TEXT NOT NULL,
+            status         TEXT NOT NULL,
+            rows_imported  INTEGER,
+            error          TEXT,
+            started_at     TIMESTAMP,
+            finished_at    TIMESTAMP,
+            reported_at    TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrape_runs_store_date "
+        "ON scrape_runs (org_id, store, run_date DESC)"
+    )
+    # Migrate single-tenant data: anything without an org joins the default org.
+    cur.execute("SELECT COUNT(*) AS n FROM orgs")
+    if cur.fetchone()["n"] == 0:
+        default_name = os.environ.get("DEFAULT_ORG_NAME", "DTID Pizza")
+        default_slug = re.sub(r"[^a-z0-9]+", "-", default_name.lower()).strip("-") or "default"
+        cur.execute("INSERT INTO orgs (name, slug) VALUES (%s, %s)", (default_name, default_slug))
+    cur.execute("SELECT id FROM orgs ORDER BY id LIMIT 1")
+    default_org = cur.fetchone()["id"]
+    cur.execute("UPDATE stores SET org_id = %s WHERE org_id IS NULL", (default_org,))
+    cur.execute(
+        "UPDATE users SET org_id = %s WHERE org_id IS NULL AND role != 'platform_admin'",
+        (default_org,),
+    )
     db.commit()
 
 
@@ -228,7 +298,11 @@ def load_user_from_token(token):
     if not uid:
         return None
     cur = get_db().cursor()
-    cur.execute("SELECT id, username, role, store FROM users WHERE id = %s", (uid,))
+    cur.execute(
+        "SELECT u.id, u.username, u.role, u.store, u.org_id, o.name AS org_name "
+        "FROM users u LEFT JOIN orgs o ON o.id = u.org_id WHERE u.id = %s",
+        (uid,),
+    )
     return row_to_dict(cur)
 
 
@@ -241,7 +315,7 @@ def require_auth():
     user = load_user_from_token(request.headers.get("X-Dashboard-Token"))
     if user:
         g.user = user
-        if user["role"] != "owner" and request.method in WRITE_METHODS:
+        if user["role"] not in SUPERVISOR_ROLES and request.method in WRITE_METHODS:
             allowed = request.path in NON_OWNER_WRITE_ALLOWED and request.method == "POST"
             # DMs may also correct attendance logs and approve/deny redemptions
             # for their own stores; the store-scope check lives in the endpoint.
@@ -279,14 +353,20 @@ HARDCODED_DM_STORE_ACCESS = {
 
 
 def allowed_stores():
-    """Set of store numbers the caller may see, or None for full access (owner / API key)."""
+    """Set of store numbers the caller may see, or None for full access
+    (platform admin / API key). Org owners are scoped to their org's stores —
+    this is the tenant-isolation chokepoint every data query flows through."""
     if hasattr(g, "_allowed"):
         return g._allowed
     user = getattr(g, "user", None)
     if user is None:
         g._allowed = None
-    elif user["role"] == "owner":
+    elif user["role"] == "platform_admin":
         g._allowed = None
+    elif user["role"] == "owner":
+        cur = get_db().cursor()
+        cur.execute("SELECT store FROM stores WHERE org_id = %s", (user.get("org_id"),))
+        g._allowed = {r["store"] for r in cur.fetchall()}
     elif user["role"] == "store":
         g._allowed = {user["store"]} if user.get("store") else set()
     elif user["role"] == "dm":
@@ -313,8 +393,17 @@ def require_owner():
     user = current_user()
     if user is None:  # API key = full access
         return None
-    if user["role"] != "owner":
+    if user["role"] not in SUPERVISOR_ROLES:
         return jsonify({"error": "Owner access required"}), 403
+    return None
+
+
+def require_platform_admin():
+    user = current_user()
+    if user is None:  # API key = platform scope
+        return None
+    if user["role"] != "platform_admin":
+        return jsonify({"error": "Platform admin access required"}), 403
     return None
 
 
@@ -346,7 +435,11 @@ def dashboard_login():
     if not isinstance(supplied, str):
         supplied = ""
 
-    cur.execute("SELECT id, username, password_hash, role FROM users WHERE username = %s", (username,))
+    cur.execute(
+        "SELECT u.id, u.username, u.password_hash, u.role, u.org_id, o.name AS org_name "
+        "FROM users u LEFT JOIN orgs o ON o.id = u.org_id WHERE u.username = %s",
+        (username,),
+    )
     user = cur.fetchone()
     if not user or not check_password_hash(user["password_hash"], supplied):
         cur.execute("INSERT INTO login_attempts (ip) VALUES (%s)", (ip,))
@@ -359,6 +452,8 @@ def dashboard_login():
         "token": issue_dashboard_token(user["id"], user["role"]),
         "role": user["role"],
         "username": user["username"],
+        "org_id": user["org_id"],
+        "org_name": user["org_name"],
         "expires_in": DASHBOARD_TOKEN_MAX_AGE,
     })
 
@@ -372,6 +467,29 @@ def healthz():
 
 # ── Import ────────────────────────────────────────────────────────────────────
 
+def _resolve_import_org():
+    """Org that incoming data belongs to. Dashboard callers use their own org.
+    API-key callers pass X-Org-Slug (multi-tenant worker); with no header the
+    default (oldest) org is used so the legacy single-org pipeline keeps working.
+    Returns (org_id, error_response)."""
+    user = current_user()
+    if user is not None and user.get("org_id"):
+        return user["org_id"], None
+    cur = get_db().cursor()
+    slug = (request.headers.get("X-Org-Slug") or "").strip().lower()
+    if slug:
+        cur.execute("SELECT id FROM orgs WHERE slug = %s", (slug,))
+        row = cur.fetchone()
+        if not row:
+            return None, (jsonify({"error": f"Unknown org slug: {slug}"}), 400)
+        return row["id"], None
+    cur.execute("SELECT id FROM orgs ORDER BY id LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        return None, (jsonify({"error": "No organizations exist yet"}), 400)
+    return row["id"], None
+
+
 @app.route("/api/import", methods=["POST"])
 def import_attendance():
     data = request.get_json(silent=True)
@@ -381,6 +499,10 @@ def import_attendance():
     records = data if isinstance(data, list) else data.get("records", [])
     if not isinstance(records, list):
         return jsonify({"error": "Expected a JSON array or {records: [...]}"}), 400
+
+    org_id, org_err = _resolve_import_org()
+    if org_err:
+        return org_err
 
     db = get_db()
     cur = db.cursor()
@@ -406,7 +528,11 @@ def import_attendance():
         store = record.get("store")
         if store and store not in seen_stores:
             seen_stores.add(store)
-            cur.execute("INSERT INTO stores (store) VALUES (%s) ON CONFLICT DO NOTHING", (store,))
+            cur.execute(
+                "INSERT INTO stores (store, org_id) VALUES (%s, %s) "
+                "ON CONFLICT (store) DO UPDATE SET org_id = COALESCE(stores.org_id, EXCLUDED.org_id)",
+                (store, org_id),
+            )
 
         cur.execute(
             """
@@ -1192,15 +1318,31 @@ def update_store(store):
     data = request.get_json(silent=True) or {}
     db = get_db()
     cur = db.cursor()
-    cur.execute("INSERT INTO stores (store) VALUES (%s) ON CONFLICT DO NOTHING", (store,))
+    cur.execute("SELECT store, org_id FROM stores WHERE store = %s", (store,))
+    existing = cur.fetchone()
+    if existing is None:
+        # New store joins the caller's org (platform-level callers may pass org_id).
+        user = current_user()
+        new_org = (user or {}).get("org_id") or data.get("org_id")
+        if not new_org:
+            return jsonify({"error": "org_id is required to create a store as a platform-level caller"}), 400
+        cur.execute("INSERT INTO stores (store, org_id) VALUES (%s, %s)", (store, new_org))
+        store_org = new_org
+    else:
+        allowed = allowed_stores()
+        if allowed is not None and store not in allowed:
+            return jsonify({"error": "That store is outside your organization"}), 403
+        store_org = existing["org_id"]
     updates = {}
     if "dm_user_id" in data:
         dm = data.get("dm_user_id")
         if dm is not None:
-            cur.execute("SELECT id, role FROM users WHERE id = %s", (dm,))
+            cur.execute("SELECT id, role, org_id FROM users WHERE id = %s", (dm,))
             r = cur.fetchone()
             if not r or r["role"] != "dm":
                 return jsonify({"error": "dm_user_id must reference a DM user"}), 400
+            if store_org and r["org_id"] != store_org:
+                return jsonify({"error": "That DM belongs to a different organization"}), 400
         updates["dm_user_id"] = dm
     if "name" in data:
         updates["name"] = data.get("name")
@@ -1222,6 +1364,9 @@ def reset_store_points(store):
     reason = (data.get("reason") or "").strip()
     if not reason:
         return jsonify({"error": "A reason is required"}), 400
+    allowed = allowed_stores()
+    if allowed is not None and store not in allowed:
+        return jsonify({"error": "That store is outside your organization"}), 403
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT 1 FROM employees WHERE store = %s LIMIT 1", (store,))
@@ -1247,9 +1392,11 @@ def list_point_resets():
         return err
     db = get_db()
     cur = db.cursor()
+    scope, params = store_scope_clause("store")
     cur.execute(
         "SELECT id, store, reset_date, reason, created_by, created_at "
-        "FROM point_resets ORDER BY created_at DESC"
+        "FROM point_resets WHERE TRUE" + scope + " ORDER BY created_at DESC",
+        params,
     )
     return jsonify(rows_to_list(cur))
 
@@ -1264,13 +1411,24 @@ def users_collection():
     db = get_db()
     cur = db.cursor()
 
+    caller = current_user()
+    caller_is_org_owner = caller is not None and caller["role"] == "owner"
+
     if request.method == "GET":
+        where = ""
+        params = []
+        if caller_is_org_owner:
+            where = "WHERE u.org_id = %s AND u.role != 'platform_admin' "
+            params = [caller["org_id"]]
         cur.execute(
-            "SELECT u.id, u.username, u.role, u.store, u.created_at, "
+            "SELECT u.id, u.username, u.role, u.store, u.org_id, o.name AS org_name, u.created_at, "
             "COALESCE(array_agg(s.store ORDER BY s.store) "
             "         FILTER (WHERE s.store IS NOT NULL), '{}') AS dm_stores "
-            "FROM users u LEFT JOIN stores s ON s.dm_user_id = u.id "
-            "GROUP BY u.id ORDER BY u.role, u.username"
+            "FROM users u LEFT JOIN orgs o ON o.id = u.org_id "
+            "LEFT JOIN stores s ON s.dm_user_id = u.id "
+            + where +
+            "GROUP BY u.id, o.name ORDER BY u.role, u.username",
+            params,
         )
         return jsonify(rows_to_list(cur))
 
@@ -1279,15 +1437,34 @@ def users_collection():
     password = data.get("password") or ""
     role = (data.get("role") or "").strip()
     store = (data.get("store") or "").strip() or None
-    if not username or not password or role not in ROLES:
-        return jsonify({"error": "username, password, and a valid role (owner/dm/store) are required"}), 400
+    valid_roles = ORG_ROLES if caller_is_org_owner else ROLES
+    if not username or not password or role not in valid_roles:
+        return jsonify({"error": f"username, password, and a valid role ({'/'.join(sorted(valid_roles))}) are required"}), 400
     if role == "store" and not store:
         return jsonify({"error": "A store-role account must specify a store"}), 400
+    # Org attribution: owners create users inside their own org, always.
+    # Platform admins / the API key pass org_id (platform_admin accounts have none).
+    if role == "platform_admin":
+        org_id = None
+    elif caller_is_org_owner:
+        org_id = caller["org_id"]
+    else:
+        org_id = data.get("org_id")
+        if not org_id:
+            return jsonify({"error": "org_id is required when creating org-level users as a platform caller"}), 400
+        cur.execute("SELECT id FROM orgs WHERE id = %s", (org_id,))
+        if not cur.fetchone():
+            return jsonify({"error": "Unknown org_id"}), 400
+    if role == "store" and org_id:
+        cur.execute("SELECT 1 FROM stores WHERE store = %s AND org_id = %s", (store, org_id))
+        if not cur.fetchone():
+            return jsonify({"error": "That store does not belong to this organization"}), 400
     try:
         cur.execute(
-            "INSERT INTO users (username, password_hash, role, store) "
-            "VALUES (%s, %s, %s, %s) RETURNING id, username, role, store",
-            (username, generate_password_hash(password), role, store if role == "store" else None),
+            "INSERT INTO users (username, password_hash, role, store, org_id) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id, username, role, store, org_id",
+            (username, generate_password_hash(password), role,
+             store if role == "store" else None, org_id),
         )
     except psycopg2.errors.UniqueViolation:
         db.rollback()
@@ -1304,14 +1481,23 @@ def user_item(uid):
         return err
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT id, role FROM users WHERE id = %s", (uid,))
+    cur.execute("SELECT id, role, org_id FROM users WHERE id = %s", (uid,))
     target = cur.fetchone()
     if not target:
         return jsonify({"error": "User not found"}), 404
 
+    caller = current_user()
+    caller_is_org_owner = caller is not None and caller["role"] == "owner"
+    if caller_is_org_owner:
+        if target["role"] == "platform_admin" or target["org_id"] != caller["org_id"]:
+            return jsonify({"error": "That user is outside your organization"}), 403
+
     if request.method == "DELETE":
         if target["role"] == "owner":
-            cur.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'owner'")
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND org_id = %s",
+                (target["org_id"],),
+            )
             if cur.fetchone()["n"] <= 1:
                 return jsonify({"error": "Cannot delete the last owner account"}), 409
         cur.execute("DELETE FROM users WHERE id = %s", (uid,))
@@ -1319,11 +1505,12 @@ def user_item(uid):
         return jsonify({"deleted": True, "id": uid})
 
     data = request.get_json(silent=True) or {}
+    valid_roles = ORG_ROLES if caller_is_org_owner else ROLES
     sets, params = [], []
     if data.get("password"):
         sets.append("password_hash = %s")
         params.append(generate_password_hash(data["password"]))
-    if data.get("role") in ROLES:
+    if data.get("role") in valid_roles:
         sets.append("role = %s")
         params.append(data["role"])
     if "store" in data:
@@ -1335,6 +1522,312 @@ def user_item(uid):
     cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", params)
     db.commit()
     return jsonify({"updated": True, "id": uid})
+
+
+# ── Organizations (platform admin only) ───────────────────────────────────────
+
+@app.route("/api/orgs", methods=["GET", "POST"])
+def orgs_collection():
+    err = require_platform_admin()
+    if err:
+        return err
+    db = get_db()
+    cur = db.cursor()
+    if request.method == "GET":
+        cur.execute("""
+            SELECT o.id, o.name, o.slug, o.created_at,
+                   (SELECT COUNT(*) FROM stores s WHERE s.org_id = o.id) AS store_count,
+                   (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id) AS user_count,
+                   COALESCE((SELECT pc.status FROM pulse_credentials pc
+                             WHERE pc.org_id = o.id), 'not_configured') AS pulse_status
+            FROM orgs o ORDER BY o.id
+        """)
+        return jsonify(rows_to_list(cur))
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    slug = (data.get("slug") or "").strip().lower() or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not slug:
+        return jsonify({"error": "Could not derive a slug; pass one explicitly"}), 400
+    try:
+        cur.execute("INSERT INTO orgs (name, slug) VALUES (%s, %s) RETURNING *", (name, slug))
+    except psycopg2.errors.UniqueViolation:
+        db.rollback()
+        return jsonify({"error": "That slug already exists"}), 409
+    org = row_to_dict(cur)
+    db.commit()
+    return jsonify(org), 201
+
+
+@app.route("/api/orgs/<int:org_id>", methods=["PATCH"])
+def update_org(org_id):
+    err = require_platform_admin()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("UPDATE orgs SET name = %s WHERE id = %s RETURNING *", (name, org_id))
+    org = row_to_dict(cur)
+    if not org:
+        return jsonify({"error": "Org not found"}), 404
+    db.commit()
+    return jsonify(org)
+
+
+# ── Pulse (PWR) credentials vault ─────────────────────────────────────────────
+# Passwords are encrypted with the scrape worker's PUBLIC key before storage.
+# The matching private key exists only on the worker machine — this server
+# cannot decrypt what it stores.
+
+def _worker_public_key():
+    from cryptography.hazmat.primitives import serialization
+    pem = os.environ.get("WORKER_PUBLIC_KEY")
+    if pem:
+        return serialization.load_pem_public_key(pem.encode())
+    with open(os.path.join(BASE_DIR, "worker_public_key.pem"), "rb") as f:
+        return serialization.load_pem_public_key(f.read())
+
+
+def encrypt_for_worker(plaintext):
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    ciphertext = _worker_public_key().encrypt(
+        plaintext.encode(),
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                     algorithm=hashes.SHA256(), label=None),
+    )
+    return base64.b64encode(ciphertext).decode()
+
+
+def _credentials_org_id():
+    """Org whose credentials are being managed. Owners always operate on their
+    own org; platform admins / the API key must name one explicitly."""
+    user = current_user()
+    if user is not None and user["role"] == "owner":
+        return user.get("org_id")
+    org_id = request.args.get("org_id", type=int)
+    if not org_id:
+        data = request.get_json(silent=True) or {}
+        org_id = data.get("org_id")
+    return org_id
+
+
+@app.route("/api/org/pulse-credentials", methods=["GET", "POST", "DELETE"])
+def org_pulse_credentials():
+    err = require_owner()
+    if err:
+        return err
+    org_id = _credentials_org_id()
+    if not org_id:
+        return jsonify({"error": "org_id is required for platform-level callers"}), 400
+    db = get_db()
+    cur = db.cursor()
+    if request.method == "GET":
+        cur.execute(
+            "SELECT org_id, pwr_username, status, status_detail, updated_at, last_checked_at "
+            "FROM pulse_credentials WHERE org_id = %s",
+            (org_id,),
+        )
+        row = row_to_dict(cur)
+        return jsonify(row or {"org_id": org_id, "status": "not_configured"})
+    if request.method == "DELETE":
+        cur.execute("DELETE FROM pulse_credentials WHERE org_id = %s", (org_id,))
+        db.commit()
+        return jsonify({"deleted": True, "org_id": org_id})
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        return jsonify({"error": "username and password are required"}), 400
+    try:
+        enc = encrypt_for_worker(password)
+    except Exception:
+        return jsonify({"error": "Credential encryption is not configured on the server"}), 500
+    user = current_user()
+    cur.execute(
+        """
+        INSERT INTO pulse_credentials
+            (org_id, pwr_username, enc_password, status, status_detail, updated_by, updated_at)
+        VALUES (%s, %s, %s, 'pending', NULL, %s, NOW())
+        ON CONFLICT (org_id) DO UPDATE SET
+            pwr_username = EXCLUDED.pwr_username,
+            enc_password = EXCLUDED.enc_password,
+            status = 'pending', status_detail = NULL,
+            updated_by = EXCLUDED.updated_by, updated_at = NOW()
+        """,
+        (org_id, username, enc, user["username"] if user else "api"),
+    )
+    db.commit()
+    return jsonify({"org_id": org_id, "status": "pending"}), 201
+
+
+# ── Worker endpoints (scrape worker via API key only) ─────────────────────────
+
+def require_worker():
+    if current_user() is not None:
+        return jsonify({"error": "Worker API key required"}), 403
+    return None
+
+
+@app.route("/api/worker/credentials", methods=["GET"])
+def worker_credentials():
+    err = require_worker()
+    if err:
+        return err
+    cur = get_db().cursor()
+    cur.execute("""
+        SELECT pc.org_id, o.slug AS org_slug, o.name AS org_name,
+               pc.pwr_username, pc.enc_password, pc.status, pc.updated_at
+        FROM pulse_credentials pc JOIN orgs o ON o.id = pc.org_id
+        ORDER BY pc.org_id
+    """)
+    return jsonify(rows_to_list(cur))
+
+
+@app.route("/api/worker/credential-status", methods=["POST"])
+def worker_credential_status():
+    err = require_worker()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    org_id = data.get("org_id")
+    status = (data.get("status") or "").strip()
+    if not org_id or status not in {"connected", "login_failed", "error"}:
+        return jsonify({"error": "org_id and status (connected|login_failed|error) are required"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "UPDATE pulse_credentials SET status = %s, status_detail = %s, last_checked_at = NOW() "
+        "WHERE org_id = %s",
+        (status, (data.get("detail") or "").strip() or None, org_id),
+    )
+    updated = cur.rowcount
+    db.commit()
+    return jsonify({"updated": bool(updated), "org_id": org_id, "status": status})
+
+
+@app.route("/api/worker/scrape-runs", methods=["POST"])
+def worker_scrape_runs():
+    err = require_worker()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    runs = data.get("runs")
+    if runs is None:
+        runs = [data] if data.get("store") else []
+    if not isinstance(runs, list) or not runs:
+        return jsonify({"error": "Expected {runs: [...]} or a single run object"}), 400
+    db = get_db()
+    cur = db.cursor()
+    slug_cache = {}
+    recorded = 0
+    errors = []
+    for i, r in enumerate(runs):
+        org_id = r.get("org_id")
+        slug = (r.get("org_slug") or "").strip().lower()
+        if not org_id and slug:
+            if slug not in slug_cache:
+                cur.execute("SELECT id FROM orgs WHERE slug = %s", (slug,))
+                row = cur.fetchone()
+                slug_cache[slug] = row["id"] if row else None
+            org_id = slug_cache[slug]
+        store = (r.get("store") or "").strip()
+        run_date = (r.get("run_date") or "").strip()
+        status = (r.get("status") or "").strip()
+        if not org_id or not store or not run_date or status not in {"success", "failed", "missing"}:
+            errors.append({"index": i, "error": "org_id/org_slug, store, run_date, and status (success|failed|missing) are required"})
+            continue
+        cur.execute(
+            "INSERT INTO scrape_runs (org_id, store, run_date, status, rows_imported, error, started_at, finished_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (org_id, store, run_date, status, r.get("rows_imported"),
+             (r.get("error") or "").strip() or None, r.get("started_at"), r.get("finished_at")),
+        )
+        recorded += 1
+    db.commit()
+    resp = {"recorded": recorded}
+    if errors:
+        resp["errors"] = errors
+    return jsonify(resp), 201 if recorded else 400
+
+
+# ── Data freshness (all dashboard roles) ──────────────────────────────────────
+
+@app.route("/api/freshness", methods=["GET"])
+def get_freshness():
+    """Per-store data freshness for the caller's visible stores, computed from
+    the worker's scrape_runs ledger with imported_batches as a legacy fallback
+    for stores that predate the ledger."""
+    db = get_db()
+    cur = db.cursor()
+    scope, params = store_scope_clause("s.store")
+    cur.execute(
+        "SELECT s.store, s.name, s.org_id FROM stores s WHERE TRUE" + scope + " ORDER BY s.store",
+        params,
+    )
+    stores = rows_to_list(cur)
+    names = [s["store"] for s in stores]
+    latest_success = {}
+    latest_attempt = {}
+    legacy = {}
+    has_ledger = set()
+    if names:
+        cur.execute(
+            "SELECT store, MAX(run_date) AS run_date FROM scrape_runs "
+            "WHERE store = ANY(%s) AND status = 'success' GROUP BY store",
+            (names,),
+        )
+        for r in rows_to_list(cur):
+            latest_success[r["store"]] = r["run_date"]
+        cur.execute(
+            "SELECT DISTINCT ON (store) store, run_date, status, error, reported_at "
+            "FROM scrape_runs WHERE store = ANY(%s) ORDER BY store, reported_at DESC",
+            (names,),
+        )
+        for r in rows_to_list(cur):
+            has_ledger.add(r["store"])
+            latest_attempt[r["store"]] = r
+        cur.execute(
+            "SELECT store, MAX(date) AS date FROM imported_batches "
+            "WHERE store = ANY(%s) GROUP BY store",
+            (names,),
+        )
+        for r in rows_to_list(cur):
+            legacy[r["store"]] = r["date"]
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    out = []
+    for s in stores:
+        st = s["store"]
+        best = latest_success.get(st) or legacy.get(st)
+        attempt = latest_attempt.get(st)
+        if best and best >= yesterday:
+            status = "current"
+        elif attempt and attempt["status"] != "success":
+            status = "failed"
+        elif best:
+            status = "behind"
+        else:
+            status = "unknown"
+        out.append({
+            "store": st,
+            "name": s["name"],
+            "status": status,
+            "data_through": best,
+            "last_attempt_status": attempt["status"] if attempt else None,
+            "last_attempt_date": attempt["run_date"] if attempt else None,
+            "tracked_by_worker": st in has_ledger,
+        })
+    return jsonify({
+        "stores": out,
+        "all_current": bool(out) and all(s["status"] == "current" for s in out),
+        "as_of": datetime.utcnow().isoformat(),
+    })
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────

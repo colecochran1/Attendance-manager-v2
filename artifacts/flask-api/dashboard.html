@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#ffffff" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <title>Attendance Manager</title>
+  <title>Slicework</title>
   <style>
     :root {
       --dom-red: #e31837;
@@ -119,6 +119,27 @@
     .btn-warn:hover { background: #c2410c; }
     .role-store [data-log-action] { display: none !important; }
     .role-readonly .supervisor-only { display: none !important; }
+    body:not(.role-platform) .platform-only { display: none !important; }
+    body.role-platform .org-owner-only { display: none !important; }
+
+    /* ── Data freshness ── */
+    .fresh-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+    .fresh-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 999px;
+      font-size: .78rem; font-weight: 600;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--muted); box-shadow: var(--shadow);
+    }
+    .fresh-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-2); flex: 0 0 auto; }
+    .fresh-chip.ok .dot { background: var(--green); }
+    .fresh-chip.warn .dot { background: var(--orange); }
+    .fresh-chip.bad .dot { background: var(--red); }
+    .banner-warn {
+      background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+      border-radius: 10px; padding: 11px 14px; font-size: .86rem;
+      margin: 0 0 14px; line-height: 1.5;
+    }
 
     .form-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 20px 18px; margin-bottom: 8px; box-shadow: var(--shadow); }
     .form-panel h3 { margin: 0 0 14px; font-size: .78rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
@@ -429,8 +450,8 @@
         <circle cx="12.5" cy="27.5" r="3.4" fill="#fff"/>
         <circle cx="20" cy="35" r="3.4" fill="#fff"/>
       </svg>
-      <h1>Attendance Manager</h1>
-      <p>Team attendance &amp; points tracking</p>
+      <h1>Slicework</h1>
+      <p>Attendance &amp; workforce for franchise operators</p>
       <label for="loginUsername">Username</label>
       <input type="text" id="loginUsername" autocomplete="username" placeholder="Username" required />
       <label for="loginPassword" style="margin-top:12px">Password</label>
@@ -454,8 +475,8 @@
             <circle cx="20" cy="35" r="3.4" fill="#fff"/>
           </svg>
           <div>
-            Attendance
-            <span class="brand-sub">Manager</span>
+            Slicework
+            <span class="brand-sub" id="brandSub">Attendance</span>
           </div>
         </div>
         <div class="topbar-actions">
@@ -499,6 +520,8 @@
           <h2>Overview</h2>
           <span class="muted" id="windowNote"></span>
         </div>
+        <div id="freshnessBanner" class="banner-warn hidden"></div>
+        <div class="fresh-row" id="freshnessChips"></div>
         <div class="cards" id="summaryCards">
           <div class="loading"><span class="spinner"></span></div>
         </div>
@@ -716,6 +739,47 @@
 
       <!-- ═══ Admin (owner only) ═══ -->
       <section class="panel supervisor-only" id="panel-admin">
+
+        <!-- Platform console (Slicework operator only) -->
+        <div class="section-head platform-only"><h2>Organizations</h2><span class="muted">Slicework platform console</span></div>
+        <div class="table-wrap platform-only" id="orgsWrap">
+          <div class="loading"><span class="spinner"></span></div>
+        </div>
+        <div class="form-panel platform-only" style="margin-top:16px;margin-bottom:28px">
+          <h3>Add organization</h3>
+          <form id="orgForm">
+            <div class="rform-grid">
+              <div>
+                <label class="field-label" for="orgName">Franchisee group name</label>
+                <input type="text" id="orgName" placeholder="e.g. Smith Pizza Group" required />
+              </div>
+            </div>
+            <div id="orgFormError" class="error hidden" style="margin-bottom:12px"></div>
+            <button class="btn" type="submit" id="orgSubmitBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Create organization</button>
+          </form>
+        </div>
+
+        <!-- Pulse connection (org owners) -->
+        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+          <h3>Pulse data connection <span class="pill" id="pulseStatusPill" style="margin-left:8px">…</span></h3>
+          <p class="muted" style="margin:0 0 14px">Connect your Pulse Web Reporting login and attendance data is imported automatically every night. Your password is encrypted the moment you save it — this web app stores only the encrypted value and cannot read it; only the isolated data worker can.</p>
+          <form id="pulseForm">
+            <div class="rform-grid">
+              <div>
+                <label class="field-label" for="pulseUser">PWR username</label>
+                <input type="text" id="pulseUser" autocomplete="off" placeholder="Pulse Web Reporting username" required />
+              </div>
+              <div>
+                <label class="field-label" for="pulsePass">PWR password</label>
+                <input type="password" id="pulsePass" autocomplete="new-password" placeholder="Pulse Web Reporting password" required />
+              </div>
+            </div>
+            <div id="pulseFormError" class="error hidden" style="margin-bottom:12px"></div>
+            <div id="pulseStatusNote" class="muted" style="margin-bottom:12px"></div>
+            <button class="btn" type="submit" id="pulseSubmitBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Save &amp; connect</button>
+          </form>
+        </div>
+
         <div class="section-head"><h2>Store Assignments</h2><span class="muted">Assign each store to a district manager</span></div>
         <div class="table-wrap" id="assignmentsWrap">
           <div class="loading"><span class="spinner"></span></div>
@@ -741,6 +805,10 @@
               <div id="userStoreField" class="hidden">
                 <label class="field-label" for="userStore">Store (for store accounts)</label>
                 <select id="userStore" style="width:100%"><option value="">Select store…</option></select>
+              </div>
+              <div class="platform-only">
+                <label class="field-label" for="userOrg">Organization</label>
+                <select id="userOrg" style="width:100%"><option value="">Select organization…</option></select>
               </div>
               <div>
                 <label class="field-label" for="userPassword">Password</label>
@@ -780,6 +848,7 @@
     "use strict";
     const TOKEN_STORE = "attendance_dash_token";
     const ROLE_STORE  = "attendance_dash_role";
+    const ORG_STORE   = "attendance_dash_org";
     const API = "/api";
 
     // ── State ──
@@ -813,9 +882,12 @@
     const setToken = (t) => sessionStorage.setItem(TOKEN_STORE, t);
     const getRole  = () => sessionStorage.getItem(ROLE_STORE) || "";
     const setRole  = (r) => sessionStorage.setItem(ROLE_STORE, r);
+    const getOrg   = () => sessionStorage.getItem(ORG_STORE) || "";
+    const setOrg   = (o) => sessionStorage.setItem(ORG_STORE, o || "");
     const clearSession = () => {
       sessionStorage.removeItem(TOKEN_STORE);
       sessionStorage.removeItem(ROLE_STORE);
+      sessionStorage.removeItem(ORG_STORE);
     };
 
     let toastTimer;
@@ -872,13 +944,16 @@
     const isFlagged = (r) => r.has_ncns || !(r.disciplinary_stage || "").toLowerCase().includes("good");
 
     // ── Auth flow ──
-    const ROLE_LABELS = { owner: "Owner", dm: "District Manager", store: "Store" };
-    const isOwner = () => getRole() === "owner";
+    const ROLE_LABELS = { platform_admin: "Platform Admin", owner: "Owner", dm: "District Manager", store: "Store" };
+    const isOwner = () => getRole() === "owner" || getRole() === "platform_admin";
+    const isPlatform = () => getRole() === "platform_admin";
     function applyRole(role) {
-      // Owner = full control. DMs can correct attendance logs for their stores
-      // but see no admin features. Store accounts are fully read-only.
-      document.body.classList.remove("role-owner", "role-readonly", "role-dm", "role-store");
+      // Platform admin = Slicework operator (owner powers + platform console).
+      // Owner = full control of their org. DMs can correct attendance logs for
+      // their stores but see no admin features. Store accounts are read-only.
+      document.body.classList.remove("role-owner", "role-readonly", "role-dm", "role-store", "role-platform");
       if (role === "owner") document.body.classList.add("role-owner");
+      else if (role === "platform_admin") document.body.classList.add("role-owner", "role-platform");
       else if (role) document.body.classList.add("role-readonly", "role-" + role);
       const badge = $("#roleBadge");
       if (badge) badge.textContent = role ? (ROLE_LABELS[role] || role) : "";
@@ -898,6 +973,8 @@
     }
     function showApp() {
       applyRole(getRole());
+      const sub = $("#brandSub");
+      if (sub) sub.textContent = isPlatform() ? "Platform" : (getOrg() || "Attendance");
       $("#login").classList.add("hidden");
       $("#app").classList.remove("hidden");
     }
@@ -923,6 +1000,7 @@
         const data = await res.json();
         setToken(data.token);
         setRole(data.role || "");
+        setOrg(data.org_name || "");
         showApp();
         loadAll();
       } catch (err) {
@@ -1011,6 +1089,7 @@
         renderAddPoints();
         renderPointHistory();
         if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
+        api("/freshness").then(renderFreshness).catch(() => {});
         if (isRefresh) toast("Updated");
       } catch (err) {
         if (err.message !== "unauthorized") toast("Failed to load: " + err.message, true);
@@ -1124,6 +1203,40 @@
           </tr>`;
         }).join("")
       );
+    }
+
+    // ── Render: Data freshness ──
+    function renderFreshness(f) {
+      const chips = $("#freshnessChips");
+      const banner = $("#freshnessBanner");
+      if (!chips || !banner) return;
+      const stores = (f && f.stores) || [];
+      if (!stores.length) { chips.innerHTML = ""; banner.classList.add("hidden"); return; }
+      const fmtDate = (d) => {
+        if (!d) return null;
+        const dt = new Date(d + "T12:00:00Z");
+        return dt.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      };
+      chips.innerHTML = stores.map((s) => {
+        const label = esc(s.store) + (s.name ? " · " + esc(s.name) : "");
+        if (s.status === "current") {
+          return `<span class="fresh-chip ok"><span class="dot"></span>${label}: data through ${fmtDate(s.data_through)}</span>`;
+        }
+        if (s.status === "failed" || s.status === "behind") {
+          const through = s.data_through ? `last data ${fmtDate(s.data_through)}` : "no recent data";
+          return `<span class="fresh-chip ${s.status === "failed" ? "bad" : "warn"}"><span class="dot"></span>${label}: ${through}</span>`;
+        }
+        return `<span class="fresh-chip"><span class="dot"></span>${label}: no data yet</span>`;
+      }).join("");
+      const gaps = stores.filter((s) => s.status === "failed" || s.status === "behind");
+      if (gaps.length) {
+        banner.innerHTML = `<strong>Heads up:</strong> last night's data is missing for ` +
+          gaps.map((s) => esc(s.store)).join(", ") +
+          `. An automatic retry is already scheduled — no action needed. Numbers for those stores may be incomplete until it lands.`;
+        banner.classList.remove("hidden");
+      } else {
+        banner.classList.add("hidden");
+      }
     }
 
     // ── Render: Overview ──
@@ -1807,10 +1920,121 @@
         renderAssignments();
         renderUsers();
         populateResetStoreSelect();
+        if (isPlatform()) {
+          const orgs = await api("/orgs");
+          renderOrgs(orgs);
+          const orgSel = $("#userOrg");
+          if (orgSel) {
+            const cur = orgSel.value;
+            orgSel.innerHTML = '<option value="">Select organization…</option>' +
+              orgs.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("");
+            if (cur) orgSel.value = cur;
+          }
+        } else {
+          api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
+        }
       } catch (err) {
         if (err.message !== "unauthorized") toast("Admin load failed: " + err.message, true);
       }
     }
+
+    // ── Platform console: organizations ──
+    const PULSE_LABELS = {
+      not_configured: ["Not connected", ""],
+      pending: ["Pending verification", "status-pending"],
+      connected: ["Connected", "status-approved"],
+      login_failed: ["Login failed", "status-rejected"],
+      error: ["Connection error", "status-rejected"],
+    };
+
+    function renderOrgs(orgs) {
+      const wrap = $("#orgsWrap");
+      if (!wrap) return;
+      if (!orgs.length) { wrap.innerHTML = emptyState("🏢", "No organizations yet"); return; }
+      wrap.innerHTML = tableHTML(
+        ["Organization", "Slug", "Stores", "Users", "Pulse"],
+        orgs.map((o) => {
+          const [lbl, cls] = PULSE_LABELS[o.pulse_status] || [o.pulse_status, ""];
+          return `<tr>
+            <td><div class="name">${esc(o.name)}</div></td>
+            <td>${esc(o.slug)}</td>
+            <td>${o.store_count}</td>
+            <td>${o.user_count}</td>
+            <td><span class="pill ${cls}">${esc(lbl)}</span></td>
+          </tr>`;
+        }).join("")
+      );
+    }
+
+    const orgForm = $("#orgForm");
+    if (orgForm) orgForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = ($("#orgName").value || "").trim();
+      const errEl = $("#orgFormError");
+      errEl.classList.add("hidden");
+      if (!name) return;
+      const btn = $("#orgSubmitBtn");
+      btn.disabled = true; btn.textContent = "Creating…";
+      try {
+        await api("/orgs", { method: "POST", body: JSON.stringify({ name }) });
+        toast(`Organization "${name}" created`);
+        e.target.reset();
+        await loadAdmin();
+      } catch (err) {
+        errEl.textContent = err.message || "Could not create organization.";
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Create organization";
+      }
+    });
+
+    // ── Pulse connection (org owners) ──
+    function renderPulseStatus(cred) {
+      const pill = $("#pulseStatusPill");
+      const note = $("#pulseStatusNote");
+      if (!pill) return;
+      const status = (cred && cred.status) || "not_configured";
+      const [lbl, cls] = PULSE_LABELS[status] || [status, ""];
+      pill.className = "pill " + cls;
+      pill.textContent = lbl;
+      if (note) {
+        if (status === "connected") {
+          note.textContent = `Connected as ${cred.pwr_username}. Nightly imports are active.`;
+        } else if (status === "pending") {
+          note.textContent = `Saved as ${cred.pwr_username}. The connection will be verified within a few minutes of the next worker check-in.`;
+        } else if (status === "login_failed") {
+          note.textContent = `The saved login for ${cred.pwr_username} was rejected by Pulse Web Reporting — re-enter the credentials (did the password change?).`;
+        } else {
+          note.textContent = "";
+        }
+      }
+      const userEl = $("#pulseUser");
+      if (userEl && cred && cred.pwr_username && !userEl.value) userEl.value = cred.pwr_username;
+    }
+
+    const pulseForm = $("#pulseForm");
+    if (pulseForm) pulseForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = ($("#pulseUser").value || "").trim();
+      const password = $("#pulsePass").value;
+      const errEl = $("#pulseFormError");
+      errEl.classList.add("hidden");
+      if (!username || !password) return;
+      const btn = $("#pulseSubmitBtn");
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        await api("/org/pulse-credentials", { method: "POST", body: JSON.stringify({ username, password }) });
+        $("#pulsePass").value = "";
+        toast("Credentials saved — connection will be verified shortly");
+        const cred = await api("/org/pulse-credentials");
+        renderPulseStatus(cred);
+      } catch (err) {
+        errEl.textContent = err.message || "Could not save credentials.";
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Save & connect";
+      }
+    });
 
     function dmUsers() { return users.filter((u) => u.role === "dm"); }
 
@@ -1842,9 +2066,11 @@
         ["Username", "Role", "Scope", ""],
         users.map((u) => {
           let scope = "—";
-          if (u.role === "owner") scope = "All stores";
+          if (u.role === "platform_admin") scope = "Platform";
+          else if (u.role === "owner") scope = "All stores";
           else if (u.role === "store") scope = esc(u.store || "—");
           else if (u.role === "dm") scope = (u.dm_stores && u.dm_stores.length) ? esc(u.dm_stores.join(", ")) : "(none assigned)";
+          if (isPlatform() && u.org_name) scope += " · " + esc(u.org_name);
           return `<tr>
             <td><div class="name">${esc(u.username)}</div></td>
             <td>${esc(ROLE_LABELS[u.role] || u.role)}</td>
@@ -1880,8 +2106,17 @@
       }
       const btn = $("#userSubmitBtn");
       btn.disabled = true; btn.textContent = "Creating…";
+      const payload = { username, role, store: role === "store" ? store : null, password };
+      if (isPlatform()) {
+        const orgSel = $("#userOrg");
+        if (orgSel && orgSel.value) payload.org_id = parseInt(orgSel.value, 10);
+        if (!payload.org_id) {
+          errEl.textContent = "Select an organization for this user."; errEl.classList.remove("hidden");
+          return;
+        }
+      }
       try {
-        await api("/users", { method: "POST", body: JSON.stringify({ username, role, store: role === "store" ? store : null, password }) });
+        await api("/users", { method: "POST", body: JSON.stringify(payload) });
         toast(`Account "${username}" created`);
         e.target.reset();
         $("#userStoreField").classList.add("hidden");

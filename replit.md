@@ -60,3 +60,15 @@ A standalone Flask REST API for tracking employee attendance, point-based discip
 
 - See the `pnpm-workspace` skill for workspace structure and artifact conventions.
 - See the `deployment` skill for how production config in `artifact.toml` drives publishing.
+
+## Multi-tenancy (Slicework)
+
+This app is becoming **Slicework** — a multi-tenant platform for franchisee groups.
+
+- `orgs` table = franchisee groups. `users.org_id` and `stores.org_id` attribute everything; employees/logs/redemptions derive their org through their store. Legacy data was migrated into the default org (`DEFAULT_ORG_NAME`, default "DTID Pizza") on first boot.
+- Roles: `platform_admin` (Slicework operator, cross-org, org_id NULL) > `owner` (their org only) > `dm` > `store`. Tenant isolation is enforced in `allowed_stores()` — org owners get their org's store set, and every data query flows through `store_scope_clause()`.
+- **Pulse credentials vault**: `POST /api/org/pulse-credentials` RSA-OAEP-encrypts the PWR password with the worker's public key (`worker_public_key.pem`, or `WORKER_PUBLIC_KEY` env). The private key lives only on the scrape worker machine — this server cannot decrypt stored credentials.
+- **Worker endpoints** (X-API-Key only, rejected for dashboard tokens): `GET /api/worker/credentials`, `POST /api/worker/credential-status`, `POST /api/worker/scrape-runs`.
+- **Scrape health**: `scrape_runs` ledger per (org, store, business date); `GET /api/freshness` computes per-store status (current/behind/failed/unknown) with `imported_batches` as legacy fallback. Dashboard shows chips + a banner; deliberately NO user-facing re-run button.
+- `POST /api/import` accepts `X-Org-Slug` to attribute data; without it, data goes to the default (oldest) org for legacy pipeline compatibility.
+- Test suite: `slicework_test.py` pattern (embedded Postgres via `pgserver`, Flask test client) exercises isolation + vault + freshness end to end.
