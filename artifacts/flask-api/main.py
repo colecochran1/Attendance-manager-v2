@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from collections import defaultdict
@@ -269,6 +270,24 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_scrape_runs_store_date "
         "ON scrape_runs (org_id, store, run_date DESC)"
     )
+    # Per-org point rules (JSON overrides merged over DEFAULT_POINT_CONFIG).
+    cur.execute("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS point_config JSONB")
+    # On-demand scrape queue: platform admin queues targeted pulls (e.g. only
+    # stores whose data is missing/stale); the worker polls and executes them.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_requests (
+            id            SERIAL PRIMARY KEY,
+            org_id        INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+            stores        TEXT[] NOT NULL,
+            run_date      TEXT NOT NULL,
+            status        TEXT DEFAULT 'pending',
+            detail        TEXT,
+            requested_by  TEXT,
+            created_at    TIMESTAMP DEFAULT NOW(),
+            started_at    TIMESTAMP,
+            finished_at   TIMESTAMP
+        )
+    """)
     # Migrate single-tenant data: anything without an org joins the default org.
     cur.execute("SELECT COUNT(*) AS n FROM orgs")
     if cur.fetchone()["n"] == 0:
@@ -965,20 +984,50 @@ def disciplinary_stage(points, has_ncns=False):
     return "Termination"
 
 
-def base_points_for_log(status, minutes_late):
+# Point rules an org may override (Admin → Point settings; platform admin or
+# org owner only). Stored as JSON overrides in orgs.point_config and merged
+# over these defaults, so orgs only persist what they changed and new rule
+# keys pick up defaults automatically. ncns_points: None = automatic
+# termination (the classic rule); a number = that many points instead.
+DEFAULT_POINT_CONFIG = {
+    "late_points": 1.0,
+    "late_major_points": 2.0,
+    "late_major_threshold_minutes": 60,
+    "called_in_points": 2.0,
+    "weekend_multiplier": 2.0,
+    "ncns_points": None,
+}
+
+
+def merged_point_config(overrides):
+    cfg = dict(DEFAULT_POINT_CONFIG)
+    if isinstance(overrides, dict):
+        cfg.update({k: v for k, v in overrides.items() if k in DEFAULT_POINT_CONFIG})
+    return cfg
+
+
+def org_point_configs(cur):
+    """org_id -> merged point config for every org."""
+    cur.execute("SELECT id, point_config FROM orgs")
+    return {r["id"]: merged_point_config(r["point_config"]) for r in rows_to_list(cur)}
+
+
+def base_points_for_log(status, minutes_late, cfg=DEFAULT_POINT_CONFIG):
     status = (status or "").lower().strip()
     if status in NCNS_STATUSES:
-        return None
+        ncns = cfg.get("ncns_points")
+        return None if ncns is None else float(ncns)
     if status in CALLED_IN_STATUSES:
-        return 2.0
+        return float(cfg["called_in_points"])
     if status == "exempted":
         return 0.0
     if minutes_late is not None and minutes_late > 0:
-        return 1.0 if minutes_late <= 60 else 2.0
+        threshold = float(cfg["late_major_threshold_minutes"])
+        return float(cfg["late_points"]) if minutes_late <= threshold else float(cfg["late_major_points"])
     if status == "late":
-        return 1.0
+        return float(cfg["late_points"])
     if status in {"late_major", "late_1hr", "late_2hr"}:
-        return 2.0
+        return float(cfg["late_major_points"])
     return 0.0
 
 
@@ -1017,6 +1066,11 @@ def get_stats():
     )
     store_resets = {r["store"]: r["reset_date"] for r in rows_to_list(cur)}
 
+    # Each employee is scored under their org's point rules (store -> org -> config).
+    cur.execute("SELECT store, org_id FROM stores")
+    store_org = {r["store"]: r["org_id"] for r in rows_to_list(cur)}
+    org_configs = org_point_configs(cur)
+
     employee_ids = [emp["employee_id"] for emp in employees]
     logs_by_emp = defaultdict(list)
     redemptions_by_emp = defaultdict(list)
@@ -1043,6 +1097,7 @@ def get_stats():
     results = []
     for emp in employees:
         eid = emp["employee_id"]
+        cfg = org_configs.get(store_org.get(emp["store"]), DEFAULT_POINT_CONFIG)
         reset_date = store_resets.get(emp["store"])
         effective_since = max(since, reset_date) if reset_date else since
         logs = [l for l in logs_by_emp.get(eid, []) if l["date"] >= effective_since]
@@ -1063,7 +1118,7 @@ def get_stats():
                         "weekend": False, "points_applied": mp,
                     })
                 continue
-            base = base_points_for_log(status, minutes_late)
+            base = base_points_for_log(status, minutes_late, cfg)
             if base is None:
                 has_ncns = True
                 point_log.append({
@@ -1075,7 +1130,7 @@ def get_stats():
             if base == 0.0:
                 continue
             weekend = is_weekend(date_str)
-            applied = base * 2 if weekend else base
+            applied = base * float(cfg["weekend_multiplier"]) if weekend else base
             total_points += applied
             point_log.append({
                 "log_id": log["id"], "date": date_str, "status": status,
@@ -1693,6 +1748,159 @@ def org_pulse_credentials():
     return jsonify({"org_id": org_id, "status": "pending"}), 201
 
 
+# ── Per-org point settings (platform admin / org owner only) ─────────────────
+
+@app.route("/api/org/point-config", methods=["GET", "PUT"])
+def org_point_config():
+    err = require_owner()
+    if err:
+        return err
+    org_id = _credentials_org_id()
+    if not org_id:
+        return jsonify({"error": "org_id is required for platform-level callers"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, point_config FROM orgs WHERE id = %s", (org_id,))
+    row = row_to_dict(cur)
+    if not row:
+        return jsonify({"error": "Organization not found"}), 404
+    if request.method == "GET":
+        return jsonify({
+            "org_id": org_id,
+            "config": merged_point_config(row["point_config"]),
+            "defaults": DEFAULT_POINT_CONFIG,
+        })
+    data = request.get_json(silent=True) or {}
+    # Partial updates merge over what the org already customized, so setting
+    # one rule never silently resets the others back to defaults.
+    existing = row["point_config"] if isinstance(row["point_config"], dict) else {}
+    overrides = {k: v for k, v in existing.items() if k in DEFAULT_POINT_CONFIG}
+    for key in DEFAULT_POINT_CONFIG:
+        if key not in data:
+            continue
+        val = data[key]
+        if key == "ncns_points" and val is None:
+            overrides[key] = None
+            continue
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"{key} must be a number"}), 400
+        if val < 0:
+            return jsonify({"error": f"{key} cannot be negative"}), 400
+        if key == "weekend_multiplier" and val < 1:
+            return jsonify({"error": "weekend_multiplier must be at least 1 (1 = no weekend extra)"}), 400
+        overrides[key] = val
+    unknown = set(data) - set(DEFAULT_POINT_CONFIG)
+    if unknown:
+        return jsonify({"error": f"Unknown point-config keys: {', '.join(sorted(unknown))}"}), 400
+    cur.execute(
+        "UPDATE orgs SET point_config = %s WHERE id = %s",
+        (json.dumps(overrides), org_id),
+    )
+    db.commit()
+    return jsonify({"org_id": org_id, "config": merged_point_config(overrides)})
+
+
+# ── On-demand scrape requests (platform admin queues; worker executes) ───────
+
+def _missing_stores_by_org(cur, org_id=None):
+    """Stores whose data is not current through yesterday, grouped by org.
+    Only orgs with a connected Pulse credential are considered (no credential
+    = nothing the worker could do). Mirrors /api/freshness: newest successful
+    scrape_runs date, imported_batches as legacy fallback."""
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    params = []
+    org_filter = ""
+    if org_id:
+        org_filter = " AND s.org_id = %s"
+        params.append(org_id)
+    cur.execute(
+        """
+        SELECT s.store, s.org_id
+        FROM stores s
+        JOIN pulse_credentials pc ON pc.org_id = s.org_id AND pc.status = 'connected'
+        WHERE s.org_id IS NOT NULL
+        """ + org_filter + " ORDER BY s.store",
+        params,
+    )
+    stores = rows_to_list(cur)
+    names = [s["store"] for s in stores]
+    best = {}
+    if names:
+        cur.execute(
+            "SELECT store, MAX(run_date) AS d FROM scrape_runs "
+            "WHERE store = ANY(%s) AND status = 'success' GROUP BY store",
+            (names,),
+        )
+        for r in rows_to_list(cur):
+            best[r["store"]] = r["d"]
+        cur.execute(
+            "SELECT store, MAX(date) AS d FROM imported_batches "
+            "WHERE store = ANY(%s) GROUP BY store",
+            (names,),
+        )
+        for r in rows_to_list(cur):
+            if not best.get(r["store"]) or r["d"] > best[r["store"]]:
+                best[r["store"]] = max(best.get(r["store"]) or "", r["d"])
+    missing = defaultdict(list)
+    for s in stores:
+        d = best.get(s["store"])
+        if not d or d < yesterday:
+            missing[s["org_id"]].append(s["store"])
+    return missing, yesterday
+
+
+@app.route("/api/admin/scrape-requests", methods=["GET", "POST"])
+def admin_scrape_requests():
+    err = require_platform_admin()
+    if err:
+        return err
+    db = get_db()
+    cur = db.cursor()
+    if request.method == "GET":
+        cur.execute(
+            """
+            SELECT sr.id, sr.org_id, o.name AS org_name, sr.stores, sr.run_date,
+                   sr.status, sr.detail, sr.requested_by, sr.created_at, sr.finished_at
+            FROM scrape_requests sr JOIN orgs o ON o.id = sr.org_id
+            ORDER BY sr.id DESC LIMIT 20
+            """
+        )
+        return jsonify(rows_to_list(cur))
+    data = request.get_json(silent=True) or {}
+    org_id = data.get("org_id") or org_view_id()
+    missing, run_date = _missing_stores_by_org(cur, org_id)
+    # One open request per org at a time: don't stack duplicates onto the queue.
+    cur.execute(
+        "SELECT org_id FROM scrape_requests WHERE status IN ('pending', 'running')"
+    )
+    open_orgs = {r["org_id"] for r in rows_to_list(cur)}
+    user = current_user()
+    created = []
+    skipped = []
+    for oid, store_list in sorted(missing.items()):
+        if oid in open_orgs:
+            skipped.append({"org_id": oid, "reason": "request already queued"})
+            continue
+        cur.execute(
+            "INSERT INTO scrape_requests (org_id, stores, run_date, requested_by) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (oid, store_list, run_date, user["username"] if user else "api"),
+        )
+        created.append({
+            "id": cur.fetchone()["id"], "org_id": oid,
+            "stores": store_list, "run_date": run_date,
+        })
+    db.commit()
+    return jsonify({
+        "created": created,
+        "skipped": skipped,
+        "message": ("Nothing to pull — every store with a connected credential is current."
+                    if not created and not skipped else None),
+    }), 201 if created else 200
+
+
 # ── Worker endpoints (scrape worker via API key only) ─────────────────────────
 
 def require_worker():
@@ -1736,6 +1944,45 @@ def worker_credential_status():
     updated = cur.rowcount
     db.commit()
     return jsonify({"updated": bool(updated), "org_id": org_id, "status": status})
+
+
+@app.route("/api/worker/scrape-requests", methods=["GET"])
+def worker_scrape_requests():
+    err = require_worker()
+    if err:
+        return err
+    cur = get_db().cursor()
+    cur.execute(
+        """
+        SELECT sr.id, sr.org_id, o.slug AS org_slug, sr.stores, sr.run_date
+        FROM scrape_requests sr JOIN orgs o ON o.id = sr.org_id
+        WHERE sr.status = 'pending' ORDER BY sr.id
+        """
+    )
+    return jsonify(rows_to_list(cur))
+
+
+@app.route("/api/worker/scrape-requests/<int:rid>", methods=["POST"])
+def worker_scrape_request_status(rid):
+    err = require_worker()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    status = (data.get("status") or "").strip()
+    if status not in {"running", "done", "error"}:
+        return jsonify({"error": "status (running|done|error) is required"}), 400
+    db = get_db()
+    cur = db.cursor()
+    stamps = "started_at = NOW()" if status == "running" else "finished_at = NOW()"
+    cur.execute(
+        f"UPDATE scrape_requests SET status = %s, detail = %s, {stamps} WHERE id = %s",
+        (status, (data.get("detail") or "").strip() or None, rid),
+    )
+    updated = cur.rowcount
+    db.commit()
+    if not updated:
+        return jsonify({"error": "Unknown request id"}), 404
+    return jsonify({"id": rid, "status": status})
 
 
 @app.route("/api/worker/scrape-runs", methods=["POST"])

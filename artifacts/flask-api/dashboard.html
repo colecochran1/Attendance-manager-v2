@@ -766,6 +766,15 @@
           </form>
         </div>
 
+        <!-- On-demand data pulls (Slicework operator only) -->
+        <div class="form-panel platform-only" style="margin-bottom:28px">
+          <h3>Data pulls</h3>
+          <p class="muted" style="margin:0 0 14px">Queues a pull of <strong>only the stores whose data isn't current</strong> through yesterday — stores that are already up to date are skipped, so the worker never re-scrapes data it has. Scoped to the selected organization, or every organization when viewing all. The worker picks queued pulls up within a few minutes.</p>
+          <div id="pullResult" class="muted" style="margin-bottom:12px"></div>
+          <button class="btn" type="button" id="pullMissingBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Pull missing stores</button>
+          <div class="table-wrap" id="scrapeReqWrap" style="margin-top:16px"></div>
+        </div>
+
         <!-- Pulse connection (org owners) -->
         <div class="form-panel org-owner-only" style="margin-bottom:28px">
           <h3>Pulse data connection <span class="pill" id="pulseStatusPill" style="margin-left:8px">…</span></h3>
@@ -784,6 +793,49 @@
             <div id="pulseFormError" class="error hidden" style="margin-bottom:12px"></div>
             <div id="pulseStatusNote" class="muted" style="margin-bottom:12px"></div>
             <button class="btn" type="submit" id="pulseSubmitBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Save &amp; connect</button>
+          </form>
+        </div>
+
+        <!-- Point settings (org owners + platform admin) -->
+        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+          <h3>Point settings</h3>
+          <p class="muted" style="margin:0 0 14px">How attendance points are assigned for this organization. Changes apply immediately to everyone's active point totals and disciplinary stages.</p>
+          <form id="pointCfgForm">
+            <div class="rform-grid">
+              <div>
+                <label class="field-label" for="pcLate">Points — late (minor)</label>
+                <input type="number" id="pcLate" min="0" step="0.5" required />
+              </div>
+              <div>
+                <label class="field-label" for="pcLateMajor">Points — late (major)</label>
+                <input type="number" id="pcLateMajor" min="0" step="0.5" required />
+              </div>
+              <div>
+                <label class="field-label" for="pcThreshold">Major-late threshold (minutes)</label>
+                <input type="number" id="pcThreshold" min="1" step="1" required />
+              </div>
+              <div>
+                <label class="field-label" for="pcCalledIn">Points — called in</label>
+                <input type="number" id="pcCalledIn" min="0" step="0.5" required />
+              </div>
+              <div>
+                <label class="field-label" for="pcWeekend">Weekend multiplier (1 = no extra)</label>
+                <input type="number" id="pcWeekend" min="1" step="0.5" required />
+              </div>
+              <div>
+                <label class="field-label" for="pcNcnsMode">No-call/no-show</label>
+                <select id="pcNcnsMode" style="width:100%">
+                  <option value="auto">Automatic termination</option>
+                  <option value="points">Assign points instead</option>
+                </select>
+              </div>
+              <div id="pcNcnsPointsField" class="hidden">
+                <label class="field-label" for="pcNcnsPoints">Points — no-call/no-show</label>
+                <input type="number" id="pcNcnsPoints" min="0" step="0.5" />
+              </div>
+            </div>
+            <div id="pointCfgError" class="error hidden" style="margin-bottom:12px"></div>
+            <button class="btn" type="submit" id="pointCfgBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Save point settings</button>
           </form>
         </div>
 
@@ -1979,9 +2031,14 @@
             else if (getOrgView()) orgSel.value = getOrgView();
           }
           populateOrgViewSel(); // keep the header switcher in sync with new orgs
-          if (getOrgView()) api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
+          if (getOrgView()) {
+            api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
+            api("/org/point-config").then(renderPointConfig).catch(() => {});
+          }
+          loadScrapeRequests();
         } else {
           api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
+          api("/org/point-config").then(renderPointConfig).catch(() => {});
         }
       } catch (err) {
         if (err.message !== "unauthorized") toast("Admin load failed: " + err.message, true);
@@ -2083,6 +2140,99 @@
         errEl.classList.remove("hidden");
       } finally {
         btn.disabled = false; btn.textContent = "Save & connect";
+      }
+    });
+
+    // ── Point settings (org owners + platform admin) ──
+    function renderPointConfig(resp) {
+      const cfg = resp.config;
+      $("#pcLate").value = cfg.late_points;
+      $("#pcLateMajor").value = cfg.late_major_points;
+      $("#pcThreshold").value = cfg.late_major_threshold_minutes;
+      $("#pcCalledIn").value = cfg.called_in_points;
+      $("#pcWeekend").value = cfg.weekend_multiplier;
+      const auto = cfg.ncns_points === null || cfg.ncns_points === undefined;
+      $("#pcNcnsMode").value = auto ? "auto" : "points";
+      $("#pcNcnsPoints").value = auto ? "" : cfg.ncns_points;
+      $("#pcNcnsPointsField").classList.toggle("hidden", auto);
+    }
+    const ncnsModeSel = $("#pcNcnsMode");
+    if (ncnsModeSel) ncnsModeSel.addEventListener("change", () => {
+      $("#pcNcnsPointsField").classList.toggle("hidden", ncnsModeSel.value === "auto");
+    });
+    const pointCfgForm = $("#pointCfgForm");
+    if (pointCfgForm) pointCfgForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errEl = $("#pointCfgError");
+      errEl.classList.add("hidden");
+      const body = {
+        late_points: parseFloat($("#pcLate").value),
+        late_major_points: parseFloat($("#pcLateMajor").value),
+        late_major_threshold_minutes: parseFloat($("#pcThreshold").value),
+        called_in_points: parseFloat($("#pcCalledIn").value),
+        weekend_multiplier: parseFloat($("#pcWeekend").value),
+        ncns_points: $("#pcNcnsMode").value === "auto" ? null : parseFloat($("#pcNcnsPoints").value || "0"),
+      };
+      const btn = $("#pointCfgBtn");
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        const resp = await api("/org/point-config", { method: "PUT", body: JSON.stringify(body) });
+        renderPointConfig({ config: resp.config });
+        toast("Point settings saved");
+      } catch (err) {
+        errEl.textContent = err.message || "Could not save point settings.";
+        errEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false; btn.textContent = "Save point settings";
+      }
+    });
+
+    // ── Data pulls (platform admin) ──
+    const REQ_LABELS = {
+      pending: ["Queued", "status-pending"],
+      running: ["Running", "status-pending"],
+      done: ["Done", "status-approved"],
+      error: ["Error", "status-rejected"],
+    };
+    function renderScrapeRequests(reqs) {
+      const wrap = $("#scrapeReqWrap");
+      if (!wrap) return;
+      if (!reqs.length) { wrap.innerHTML = ""; return; }
+      wrap.innerHTML = tableHTML(
+        ["Organization", "Stores", "For date", "Status"],
+        reqs.map((r) => {
+          const [lbl, cls] = REQ_LABELS[r.status] || [r.status, ""];
+          return `<tr>
+            <td><div class="name">${esc(r.org_name)}</div><div class="sub">by ${esc(r.requested_by || "")}</div></td>
+            <td>${esc((r.stores || []).join(", "))}</td>
+            <td>${esc(r.run_date)}</td>
+            <td><span class="pill ${cls}">${esc(lbl)}</span>${r.detail ? `<div class="sub">${esc(r.detail)}</div>` : ""}</td>
+          </tr>`;
+        }).join("")
+      );
+    }
+    async function loadScrapeRequests() {
+      try { renderScrapeRequests(await api("/admin/scrape-requests")); } catch (_) {}
+    }
+    const pullBtn = $("#pullMissingBtn");
+    if (pullBtn) pullBtn.addEventListener("click", async () => {
+      pullBtn.disabled = true; pullBtn.textContent = "Queuing…";
+      const out = $("#pullResult");
+      try {
+        const resp = await api("/admin/scrape-requests", { method: "POST", body: JSON.stringify({}) });
+        if (resp.message) out.textContent = resp.message;
+        else {
+          const n = resp.created.reduce((sum, c) => sum + c.stores.length, 0);
+          const skip = resp.skipped.length ? ` (${resp.skipped.length} org(s) already queued)` : "";
+          out.textContent = resp.created.length
+            ? `Queued ${n} store(s) across ${resp.created.length} org(s)${skip} — the worker picks this up within a few minutes.`
+            : `Nothing new queued${skip}.`;
+        }
+        loadScrapeRequests();
+      } catch (err) {
+        out.textContent = "Could not queue pull: " + (err.message || "unknown error");
+      } finally {
+        pullBtn.disabled = false; pullBtn.textContent = "Pull missing stores";
       }
     });
 
