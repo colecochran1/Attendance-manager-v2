@@ -162,5 +162,21 @@ r = c.get(f"/api/day-stats?date={yesterday}", headers=own_b)
 check("day-stats is store-scoped (beta sees no alpha stores)",
       {s["store"] for s in r.get_json()["stores"]}.isdisjoint({"1001", "1002"}))
 
+# ── Store deletion ───────────────────────────────────────────────────────────
+r = c.patch("/api/stores/9999", headers=KEY, json={"org_id": alpha, "name": "Test Store"})
+assert r.status_code in (200, 201), r.get_data()
+c.post("/api/employees", headers=KEY, json={"employee_id": "T9", "name": "Tess T", "store": "9999"})
+r = c.delete("/api/stores/9999", headers=own_a)
+check("owner cannot delete a store", r.status_code == 403)
+r = c.delete("/api/stores/9999", headers=KEY)
+check("delete refused while employees remain", r.status_code == 409)
+c.delete("/api/employees/T9", headers=KEY)
+r = c.delete("/api/stores/9999", headers=KEY)
+check("platform-level delete works once empty", r.status_code == 200)
+r = c.get("/api/stores", headers=own_a)
+check("deleted store is gone from the list", "9999" not in {s["store"] for s in r.get_json()})
+r = c.delete("/api/stores/9999", headers=KEY)
+check("deleting a missing store 404s", r.status_code == 404)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

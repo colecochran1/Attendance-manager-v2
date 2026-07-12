@@ -1516,6 +1516,30 @@ def update_store(store):
     return jsonify({"updated": True, "store": store})
 
 
+@app.route("/api/stores/<store>", methods=["DELETE"])
+def delete_store(store):
+    """Remove a store and its per-store bookkeeping (freshness history, scrape
+    runs, point resets, doc obligations). Refuses while employees still
+    reference the store so real rosters can't be dropped by accident."""
+    err = require_platform_admin()
+    if err:
+        return err
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT store FROM stores WHERE store = %s", (store,))
+    if cur.fetchone() is None:
+        return jsonify({"error": f"Store {store} not found"}), 404
+    cur.execute("SELECT COUNT(*) AS n FROM employees WHERE store = %s", (store,))
+    n = cur.fetchone()["n"]
+    if n:
+        return jsonify({"error": f"Store {store} still has {n} employee(s) — move or delete them first"}), 409
+    for table in ("imported_batches", "scrape_runs", "point_resets", "doc_obligations"):
+        cur.execute(f"DELETE FROM {table} WHERE store = %s", (store,))
+    cur.execute("DELETE FROM stores WHERE store = %s", (store,))
+    db.commit()
+    return jsonify({"deleted": True, "store": store})
+
+
 @app.route("/api/stores/<store>/reset-points", methods=["POST"])
 def reset_store_points(store):
     err = require_owner()
