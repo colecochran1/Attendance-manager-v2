@@ -139,5 +139,28 @@ check("dashboard token rejected on worker queue", c.get("/api/worker/scrape-requ
 r = c.get("/api/admin/scrape-requests", headers=pa)
 check("platform admin lists request history", r.status_code == 200 and len(r.get_json()) >= 2)
 
+# ── 9. Day stats: scheduled headcount flows import -> /api/day-stats ──
+r = c.post("/api/import", headers=dict(KEY, **{"X-Org-Slug": "alpha-pizza"}), json={
+    "records": [{"employee_id": "A2", "name": "Ann", "store": "1001",
+                 "logs": [{"date": yesterday, "status": "late", "minutes_late": 10}]}],
+    "day_stats": [{"store": "1001", "date": yesterday, "scheduled_count": 14},
+                  {"store": "1002", "date": yesterday, "scheduled_count": 9}],
+})
+check("import accepts day_stats", r.status_code == 201)
+r = c.get(f"/api/day-stats?date={yesterday}", headers=own_a)
+counts = {s["store"]: s["scheduled_count"] for s in r.get_json()["stores"]}
+check("day-stats returns scheduled counts", counts.get("1001") == 14 and counts.get("1002") == 9)
+check("violation-free store still got a batch row", "1002" in counts)
+r = c.post("/api/import", headers=dict(KEY, **{"X-Org-Slug": "alpha-pizza"}), json={
+    "records": [], "day_stats": [{"store": "1001", "date": yesterday, "scheduled_count": 15}]})
+r = c.get(f"/api/day-stats?date={yesterday}", headers=own_a)
+counts = {s["store"]: s["scheduled_count"] for s in r.get_json()["stores"]}
+check("re-import refreshes the count", counts.get("1001") == 15)
+c.post("/api/users", headers=KEY, json={"username": "beta-own", "password": "x", "role": "owner", "org_id": beta})
+own_b = login("beta-own")
+r = c.get(f"/api/day-stats?date={yesterday}", headers=own_b)
+check("day-stats is store-scoped (beta sees no alpha stores)",
+      {s["store"] for s in r.get_json()["stores"]}.isdisjoint({"1001", "1002"}))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

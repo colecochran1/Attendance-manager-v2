@@ -272,6 +272,12 @@ def init_db():
     )
     # Per-org point rules (JSON overrides merged over DEFAULT_POINT_CONFIG).
     cur.execute("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS point_config JSONB")
+    # How many people actually had a scheduled shift that store/day, reported
+    # by the worker alongside imports. Logs can't answer this: they are
+    # exception-based, so a clean day produces no rows at all.
+    cur.execute(
+        "ALTER TABLE imported_batches ADD COLUMN IF NOT EXISTS scheduled_count INTEGER"
+    )
     # On-demand scrape queue: platform admin queues targeted pulls (e.g. only
     # stores whose data is missing/stale); the worker polls and executes them.
     cur.execute("""
@@ -623,6 +629,26 @@ def import_attendance():
         cur.execute(
             "INSERT INTO imported_batches (store, date) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             (store, date),
+        )
+
+    # Per-store/day scheduled headcounts. Upserted independently of the
+    # duplicate-log guard: a violation-free day still gets its batch row, and
+    # a re-pull refreshes the count.
+    day_stats = data.get("day_stats") if isinstance(data, dict) else None
+    for ds in day_stats or []:
+        store, date = ds.get("store"), ds.get("date")
+        count = ds.get("scheduled_count")
+        if not store or not date or count is None:
+            continue
+        cur.execute(
+            "INSERT INTO stores (store, org_id) VALUES (%s, %s) "
+            "ON CONFLICT (store) DO UPDATE SET org_id = COALESCE(stores.org_id, EXCLUDED.org_id)",
+            (store, org_id),
+        )
+        cur.execute(
+            "INSERT INTO imported_batches (store, date, scheduled_count) VALUES (%s, %s, %s) "
+            "ON CONFLICT (store, date) DO UPDATE SET scheduled_count = EXCLUDED.scheduled_count",
+            (store, date, int(count)),
         )
 
     db.commit()
@@ -2028,6 +2054,24 @@ def worker_scrape_runs():
     if errors:
         resp["errors"] = errors
     return jsonify(resp), 201 if recorded else 400
+
+
+# ── Day stats (all dashboard roles; store-scoped) ─────────────────────────────
+
+@app.route("/api/day-stats", methods=["GET"])
+def get_day_stats():
+    """Scheduled-headcount per visible store for one date (default yesterday).
+    scheduled_count is null for batches that predate the worker reporting it."""
+    date = (request.args.get("date") or "").strip()
+    if not date:
+        date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    cur = get_db().cursor()
+    scope, params = store_scope_clause("store")
+    cur.execute(
+        "SELECT store, scheduled_count FROM imported_batches WHERE date = %s" + scope,
+        [date] + params,
+    )
+    return jsonify({"date": date, "stores": rows_to_list(cur)})
 
 
 # ── Data freshness (all dashboard roles) ──────────────────────────────────────

@@ -296,7 +296,7 @@
 
     /* ── Summary cards ───────────────────── */
     .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-    @media (min-width: 680px) { .cards { grid-template-columns: repeat(4, 1fr); } .cards-5 { grid-template-columns: repeat(5, 1fr); } }
+    @media (min-width: 680px) { .cards { grid-template-columns: repeat(4, 1fr); } .cards-5 { grid-template-columns: repeat(5, 1fr); } .cards-6 { grid-template-columns: repeat(6, 1fr); } }
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -537,7 +537,7 @@
           <h2>Yesterday</h2>
           <span class="muted" id="yesterdayDate"></span>
         </div>
-        <div class="cards cards-5" id="yesterdayCards">
+        <div class="cards cards-6" id="yesterdayCards">
           <div class="loading"><span class="spinner"></span></div>
         </div>
         <div class="section-head sub">
@@ -917,6 +917,7 @@
     let empNames = {};     // employee_id -> name
     let logs = [];
     let allLogs = [];      // full unfiltered log set (for Yesterday + filter reset)
+    let dayStats = null;   // yesterday's scheduled headcounts ({date, stores})
     let redemptions = [];  // /api/redemptions
     let streaks = [];      // /api/streaks
     let _exemptId = null;
@@ -1189,6 +1190,9 @@
         renderPointHistory();
         if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
         api("/freshness").then(renderFreshness).catch(() => {});
+        api("/day-stats?date=" + yesterdayStr())
+          .then((d) => { dayStats = d; renderYesterday(); })
+          .catch(() => {});
         if (isRefresh) toast("Updated");
       } catch (err) {
         if (err.message !== "unauthorized") toast("Failed to load: " + err.message, true);
@@ -1246,7 +1250,11 @@
       const dayLogs = allLogs.filter((l) => l.date === yest);
       const weekend = isWeekendDate(yest);
 
-      const totalEmps = new Set(dayLogs.map((l) => l.employee_id)).size;
+      // Real scheduled headcount from the worker (imported_batches). Logs are
+      // exception-based, so counting them would just re-count violations.
+      const schedCounts = (dayStats && dayStats.date === yest ? dayStats.stores : [])
+        .map((s) => s.scheduled_count).filter((n) => n !== null && n !== undefined);
+      const hadShifts = schedCounts.length ? schedCounts.reduce((a, b) => a + b, 0) : "—";
 
       const lateCount = dayLogs.filter((l) => {
         const pts = logBasePoints(l);
@@ -1258,18 +1266,19 @@
       const ncnsCount = dayLogs.filter((l) => NCNS_SET.has((l.status || "").toLowerCase().trim())).length;
       const coveredCount = dayLogs.filter((l) => (l.status || "").toLowerCase() === "covered_shift").length;
 
+      const violations = dayLogs.filter((l) => {
+        const pts = logBasePoints(l);
+        return pts === "ncns" || (typeof pts === "number" && pts > 0);
+      });
+
       $("#yesterdayCards").innerHTML = `
-        <div class="card info"><div class="num">${totalEmps}</div><div class="lbl">Had shifts</div></div>
+        <div class="card info"><div class="num">${hadShifts}</div><div class="lbl">Had shifts</div></div>
+        <div class="card flag"><div class="num">${violations.length}</div><div class="lbl">Total violations</div></div>
         <div class="card flag"><div class="num">${lateCount}</div><div class="lbl">Late</div></div>
         <div class="card flag"><div class="num">${calledOut}</div><div class="lbl">Called out</div></div>
         <div class="card danger"><div class="num">${ncnsCount}</div><div class="lbl">No call / no show</div></div>
         <div class="card ok"><div class="num">${coveredCount}</div><div class="lbl">Covered shifts</div></div>
       `;
-
-      const violations = dayLogs.filter((l) => {
-        const pts = logBasePoints(l);
-        return pts === "ncns" || (typeof pts === "number" && pts > 0);
-      });
 
       const wrap = $("#yesterdayViolationsWrap");
       if (!violations.length) {
