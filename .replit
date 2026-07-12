@@ -9,16 +9,6 @@ args = ["pnpm", "store", "prune"]
 env = { "CI" = "true" }
 
 [workflows]
-runButton = "Start application"
-
-[[workflows.workflow]]
-name = "Start application"
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python artifacts/flask-api/main.py"
-waitForPort = 5000
 
 [agent]
 stack = "PNPM_WORKSPACE"
