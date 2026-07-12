@@ -1318,7 +1318,8 @@
       const chips = $("#freshnessChips");
       const banner = $("#freshnessBanner");
       if (!chips || !banner) return;
-      const stores = (f && f.stores) || [];
+      // Only stores with missing/stale data get a chip; an all-current day shows nothing.
+      const stores = ((f && f.stores) || []).filter((s) => s.status !== "current");
       if (!stores.length) { chips.innerHTML = ""; banner.classList.add("hidden"); return; }
       const fmtDate = (d) => {
         if (!d) return null;
@@ -1327,9 +1328,6 @@
       };
       chips.innerHTML = stores.map((s) => {
         const label = esc(s.store) + (s.name ? " · " + esc(s.name) : "");
-        if (s.status === "current") {
-          return `<span class="fresh-chip ok"><span class="dot"></span>${label}: data through ${fmtDate(s.data_through)}</span>`;
-        }
         if (s.status === "failed" || s.status === "behind") {
           const through = s.data_through ? `last data ${fmtDate(s.data_through)}` : "no recent data";
           return `<span class="fresh-chip ${s.status === "failed" ? "bad" : "warn"}"><span class="dot"></span>${label}: ${through}</span>`;
