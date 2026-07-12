@@ -405,7 +405,7 @@ def current_user():
 # that need a fixed multi-store scope independent of the single-DM-per-store
 # assignment mechanism.
 HARDCODED_DM_STORE_ACCESS = {
-    "leo": {"2501", "2545", "2556", "2557"},
+    "c3po": {"2501", "2545", "2556", "2557"},
 }
 
 
