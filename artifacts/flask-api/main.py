@@ -272,6 +272,34 @@ def init_db():
     )
     # Per-org point rules (JSON overrides merged over DEFAULT_POINT_CONFIG).
     cur.execute("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS point_config JSONB")
+    # Per-org feature switches (JSON overrides merged over DEFAULT_FEATURES).
+    cur.execute("ALTER TABLE orgs ADD COLUMN IF NOT EXISTS features JSONB")
+    # Written-documentation obligations: one open row per employee while they
+    # sit in a disciplinary stage that requires a documented write-up (only
+    # for orgs with the written_docs feature on). Non-open rows are the audit
+    # trail: resolved = someone attested the write-up happened; lapsed = the
+    # employee dropped out of a documentation stage before it was done;
+    # superseded = replaced by an obligation at a different stage.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS doc_obligations (
+            id           SERIAL PRIMARY KEY,
+            org_id       INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+            employee_id  TEXT REFERENCES employees(employee_id) ON DELETE CASCADE,
+            store        TEXT,
+            stage        TEXT NOT NULL,
+            points       NUMERIC,
+            status       TEXT DEFAULT 'open',
+            opened_at    TIMESTAMP DEFAULT NOW(),
+            resolved_by  TEXT,
+            resolved_at  TIMESTAMP,
+            method       TEXT,
+            note         TEXT
+        )
+    """)
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_obligations_one_open "
+        "ON doc_obligations (employee_id) WHERE status = 'open'"
+    )
     # How many people actually had a scheduled shift that store/day, reported
     # by the worker alongside imports. Logs can't answer this: they are
     # exception-based, so a clean day produces no rows at all.
@@ -342,6 +370,10 @@ def require_auth():
         g.user = user
         if user["role"] not in SUPERVISOR_ROLES and request.method in WRITE_METHODS:
             allowed = request.path in NON_OWNER_WRITE_ALLOWED and request.method == "POST"
+            # GMs and DMs may attest that a required write-up was completed
+            # for their own stores; the store-scope check lives in the endpoint.
+            if request.method == "POST" and re.fullmatch(r"/api/doc-obligations/\d+/resolve", request.path):
+                allowed = True
             # DMs may also correct attendance logs and approve/deny redemptions
             # for their own stores; the store-scope check lives in the endpoint.
             if user["role"] == "dm" and request.method in ("PATCH", "DELETE"):
@@ -1032,6 +1064,25 @@ def merged_point_config(overrides):
     return cfg
 
 
+# Feature switches an org may toggle (Admin; platform admin or org owner only).
+# Stored as JSON overrides in orgs.features, merged over these defaults.
+DEFAULT_FEATURES = {
+    "written_docs": False,
+}
+
+# Stages that require a written write-up when written_docs is on. "Automatic
+# Termination" is deliberately excluded: fresh NCNS rows sit there until the
+# GM disposition lands, which would flood the action list with noise.
+DOC_REQUIRED_STAGES = {"Written Warning", "Final Written Warning", "Termination"}
+
+
+def merged_features(overrides):
+    cfg = dict(DEFAULT_FEATURES)
+    if isinstance(overrides, dict):
+        cfg.update({k: bool(v) for k, v in overrides.items() if k in DEFAULT_FEATURES})
+    return cfg
+
+
 def org_point_configs(cur):
     """org_id -> merged point config for every org."""
     cur.execute("SELECT id, point_config FROM orgs")
@@ -1066,12 +1117,20 @@ def is_weekend(date_str):
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
+    return jsonify(compute_stats(
+        employee_id=request.args.get("employee_id"),
+        store=request.args.get("store"),
+        window_days=int(request.args.get("window_days", 90)),
+    ))
+
+
+def compute_stats(employee_id=None, store=None, window_days=90):
+    """Point totals + disciplinary stage for every employee in the caller's
+    store scope. Shared by /api/stats and the doc-obligation sync so both
+    always agree on who is in which stage."""
     db = get_db()
     cur = db.cursor()
-    window_days = int(request.args.get("window_days", 90))
     since = (datetime.utcnow() - timedelta(days=window_days)).strftime("%Y-%m-%d")
-    employee_id = request.args.get("employee_id")
-    store = request.args.get("store")
     emp_query = "SELECT * FROM employees WHERE TRUE"
     emp_params = []
     if employee_id:
@@ -1180,7 +1239,7 @@ def get_stats():
             "window_since": effective_since, "logs_evaluated": len(logs),
             "points_reset_on": reset_date,
         })
-    return jsonify(results)
+    return results
 
 
 @app.route("/api/streaks", methods=["GET"])
@@ -1826,6 +1885,148 @@ def org_point_config():
     )
     db.commit()
     return jsonify({"org_id": org_id, "config": merged_point_config(overrides)})
+
+
+@app.route("/api/org/features", methods=["GET", "PUT"])
+def org_features():
+    err = require_owner()
+    if err:
+        return err
+    org_id = _credentials_org_id()
+    if not org_id:
+        return jsonify({"error": "org_id is required for platform-level callers"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, features FROM orgs WHERE id = %s", (org_id,))
+    row = row_to_dict(cur)
+    if not row:
+        return jsonify({"error": "Organization not found"}), 404
+    if request.method == "GET":
+        return jsonify({"org_id": org_id, "features": merged_features(row["features"])})
+    data = request.get_json(silent=True) or {}
+    unknown = set(data) - set(DEFAULT_FEATURES) - {"org_id"}
+    if unknown:
+        return jsonify({"error": f"Unknown feature keys: {', '.join(sorted(unknown))}"}), 400
+    existing = row["features"] if isinstance(row["features"], dict) else {}
+    overrides = {k: bool(v) for k, v in existing.items() if k in DEFAULT_FEATURES}
+    for key in DEFAULT_FEATURES:
+        if key in data:
+            overrides[key] = bool(data[key])
+    cur.execute("UPDATE orgs SET features = %s WHERE id = %s", (json.dumps(overrides), org_id))
+    db.commit()
+    return jsonify({"org_id": org_id, "features": merged_features(overrides)})
+
+
+# ── Written-documentation obligations ─────────────────────────────────────────
+
+def _sync_doc_obligations(cur, stats, store_org, enabled_orgs):
+    """Reconcile doc_obligations with current disciplinary stages: open an
+    obligation when an employee (in a written_docs org) sits in a stage that
+    requires paperwork, lapse it when they drop out, supersede it when their
+    stage changes. A stage an employee was already documented at once is not
+    re-opened."""
+    emp_ids = [s["employee_id"] for s in stats]
+    if not emp_ids:
+        return
+    cur.execute(
+        "SELECT * FROM doc_obligations WHERE employee_id = ANY(%s) AND status = 'open'",
+        (emp_ids,),
+    )
+    open_by_emp = {r["employee_id"]: r for r in rows_to_list(cur)}
+    cur.execute(
+        "SELECT DISTINCT employee_id, stage FROM doc_obligations "
+        "WHERE employee_id = ANY(%s) AND status = 'resolved'",
+        (emp_ids,),
+    )
+    documented = {(r["employee_id"], r["stage"]) for r in rows_to_list(cur)}
+
+    def open_obligation(s, stage):
+        cur.execute(
+            "INSERT INTO doc_obligations (org_id, employee_id, store, stage, points) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (store_org.get(s["store"]), s["employee_id"], s["store"], stage,
+             s["active_points"]),
+        )
+
+    for s in stats:
+        if store_org.get(s["store"]) not in enabled_orgs:
+            continue
+        eid, stage = s["employee_id"], s["disciplinary_stage"]
+        needs_doc = stage in DOC_REQUIRED_STAGES and (eid, stage) not in documented
+        existing = open_by_emp.get(eid)
+        if existing:
+            if stage not in DOC_REQUIRED_STAGES:
+                cur.execute(
+                    "UPDATE doc_obligations SET status = 'lapsed' WHERE id = %s",
+                    (existing["id"],),
+                )
+            elif existing["stage"] != stage:
+                cur.execute(
+                    "UPDATE doc_obligations SET status = 'superseded' WHERE id = %s",
+                    (existing["id"],),
+                )
+                if needs_doc:
+                    open_obligation(s, stage)
+        elif needs_doc:
+            open_obligation(s, stage)
+
+
+@app.route("/api/doc-obligations", methods=["GET"])
+def doc_obligations():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, features FROM orgs")
+    enabled_orgs = {
+        r["id"] for r in rows_to_list(cur)
+        if merged_features(r["features"])["written_docs"]
+    }
+    if not enabled_orgs:
+        return jsonify({"enabled": False, "items": []})
+    cur.execute("SELECT store, org_id FROM stores")
+    store_org = {r["store"]: r["org_id"] for r in rows_to_list(cur)}
+    # Sync covers the caller's scope: whoever can see a store keeps its
+    # obligations current just by loading the dashboard.
+    _sync_doc_obligations(cur, compute_stats(), store_org, enabled_orgs)
+    db.commit()
+    query = (
+        "SELECT d.id, d.employee_id, e.name, d.store, d.stage, d.points, "
+        "d.opened_at FROM doc_obligations d "
+        "JOIN employees e ON e.employee_id = d.employee_id "
+        "WHERE d.status = 'open'"
+    )
+    params = []
+    scope, scope_params = store_scope_clause("d.store")
+    query += scope
+    params += scope_params
+    query += " ORDER BY d.opened_at, e.name"
+    cur.execute(query, params)
+    return jsonify({"enabled": True, "items": rows_to_list(cur)})
+
+
+@app.route("/api/doc-obligations/<int:oid>/resolve", methods=["POST"])
+def resolve_doc_obligation(oid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM doc_obligations WHERE id = %s", (oid,))
+    row = row_to_dict(cur)
+    if not row:
+        return jsonify({"error": "Obligation not found"}), 404
+    allowed = allowed_stores()
+    if allowed is not None and row["store"] not in allowed:
+        return jsonify({"error": "Obligation not found"}), 404
+    if row["status"] != "open":
+        return jsonify({"error": "This item was already handled."}), 409
+    data = request.get_json(silent=True) or {}
+    method = (data.get("method") or "other").strip().lower()
+    note = (data.get("note") or "").strip() or None
+    user = current_user()
+    cur.execute(
+        "UPDATE doc_obligations SET status = 'resolved', resolved_by = %s, "
+        "resolved_at = NOW(), method = %s, note = %s WHERE id = %s",
+        (user["username"] if user else "api", method, note, oid),
+    )
+    db.commit()
+    return jsonify({"ok": True, "id": oid})
 
 
 # ── On-demand scrape requests (platform admin queues; worker executes) ───────

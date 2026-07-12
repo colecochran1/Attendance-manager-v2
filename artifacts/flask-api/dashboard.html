@@ -144,6 +144,21 @@
       margin: 0 0 14px; line-height: 1.5;
     }
 
+    /* ── Written-documentation action items ── */
+    .doc-panel {
+      background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px;
+      padding: 14px 16px 6px; margin: 0 0 16px;
+    }
+    .doc-panel h3 { margin: 0 0 4px; font-size: .92rem; font-weight: 700; color: #991b1b; }
+    .doc-panel .doc-intro { margin: 0 0 10px; font-size: .82rem; color: #b45309; line-height: 1.45; }
+    .doc-item {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 10px 0; border-top: 1px solid #fee2e2;
+    }
+    .doc-item .doc-who { font-size: .88rem; min-width: 160px; }
+    .doc-item .doc-meta { font-size: .78rem; color: var(--muted); }
+    .doc-item .btn { width: auto; margin: 0 0 0 auto; padding: 7px 14px; font-size: .8rem; }
+
     .form-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 20px 18px; margin-bottom: 8px; box-shadow: var(--shadow); }
     .form-panel h3 { margin: 0 0 14px; font-size: .78rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
     .rform-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
@@ -529,6 +544,7 @@
         </div>
         <div id="freshnessBanner" class="banner-warn hidden"></div>
         <div class="fresh-row" id="freshnessChips"></div>
+        <div id="docPanel" class="doc-panel hidden"></div>
         <div class="cards" id="summaryCards">
           <div class="loading"><span class="spinner"></span></div>
         </div>
@@ -796,6 +812,16 @@
           </form>
         </div>
 
+        <!-- Written documentation (org owners + platform admin) -->
+        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+          <h3>Written documentation</h3>
+          <p class="muted" style="margin:0 0 14px">When enabled, employees who reach Written Warning or beyond appear as an action item on the Overview page — visible to the store, its district manager, and the owner — until someone marks the write-up as completed. Complete the documentation the way your organization normally does (Zenput, paper form, etc.), then mark it done.</p>
+          <label style="display:flex;align-items:center;gap:10px;font-size:.9rem;cursor:pointer">
+            <input type="checkbox" id="featWrittenDocs" style="width:18px;height:18px;accent-color:var(--red)" />
+            <span>Track written documentation on the Overview page</span>
+          </label>
+        </div>
+
         <!-- Point settings (org owners + platform admin) -->
         <div class="form-panel org-owner-only" style="margin-bottom:28px">
           <h3>Point settings</h3>
@@ -886,6 +912,27 @@
       </section>
 
     </main>
+  </div>
+
+  <!-- Written-documentation resolution modal -->
+  <div id="docModal" class="modal-backdrop">
+    <div class="modal-card">
+      <h3>Mark documentation complete</h3>
+      <p id="docModalWho"></p>
+      <label class="field-label" for="docMethod">How was it documented?</label>
+      <select id="docMethod" style="width:100%;margin:5px 0 12px">
+        <option value="zenput">Zenput form</option>
+        <option value="paper">Paper form</option>
+        <option value="other">Other</option>
+      </select>
+      <label class="field-label" for="docNote">Note / reference (optional)</label>
+      <textarea id="docNote" rows="2" style="margin:5px 0 10px" placeholder="e.g. Zenput submission link, where the signed form is filed…"></textarea>
+      <div id="docModalError" class="error" style="display:none;margin-bottom:10px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" id="docCancelBtn" style="padding:10px 16px">Cancel</button>
+        <button class="btn btn-sm" id="docConfirmBtn" style="padding:10px 16px">Mark documented</button>
+      </div>
+    </div>
   </div>
 
   <!-- Exempt confirmation modal -->
@@ -1190,6 +1237,7 @@
         renderPointHistory();
         if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
         api("/freshness").then(renderFreshness).catch(() => {});
+        api("/doc-obligations").then(renderDocObligations).catch(() => {});
         api("/day-stats?date=" + yesterdayStr())
           .then((d) => { dayStats = d; renderYesterday(); })
           .catch(() => {});
@@ -1344,6 +1392,76 @@
         banner.classList.add("hidden");
       }
     }
+
+    // ── Written-documentation action items ──
+    let docObligations = [];
+    let docResolving = null;
+
+    function renderDocObligations(resp) {
+      const panel = $("#docPanel");
+      if (!panel) return;
+      docObligations = (resp && resp.items) || [];
+      if (!docObligations.length) {
+        panel.innerHTML = "";
+        panel.classList.add("hidden");
+        return;
+      }
+      const daysOpen = (openedAt) => {
+        const d = Math.floor((Date.now() - new Date(openedAt).getTime()) / 86400000);
+        return d <= 0 ? "today" : d === 1 ? "1 day ago" : `${d} days ago`;
+      };
+      panel.innerHTML =
+        `<h3>⚠️ Written documentation required (${docObligations.length})</h3>
+         <p class="doc-intro">These employees have reached a disciplinary stage that requires a documented write-up. Complete it the way your organization normally does, then mark it done here.</p>` +
+        docObligations.map((d) => `<div class="doc-item">
+          <div class="doc-who"><strong>${esc(d.name)}</strong> · Store ${esc(d.store)}</div>
+          <span class="pill status-rejected">${esc(d.stage)}</span>
+          <span class="doc-meta">${d.points} pts · flagged ${daysOpen(d.opened_at)}</span>
+          <button class="btn" data-doc-resolve="${d.id}">Mark documented</button>
+        </div>`).join("");
+      panel.classList.remove("hidden");
+    }
+
+    $("#docPanel").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-doc-resolve]");
+      if (!btn) return;
+      const item = docObligations.find((d) => String(d.id) === btn.getAttribute("data-doc-resolve"));
+      if (!item) return;
+      docResolving = item;
+      $("#docModalWho").textContent =
+        `${item.name} (Store ${item.store}) — ${item.stage}. Only mark this done after the write-up is completed and signed.`;
+      $("#docNote").value = "";
+      $("#docModalError").style.display = "none";
+      $("#docModal").style.display = "flex";
+    });
+
+    $("#docCancelBtn").addEventListener("click", () => {
+      docResolving = null;
+      $("#docModal").style.display = "none";
+    });
+
+    $("#docConfirmBtn").addEventListener("click", async () => {
+      if (!docResolving) return;
+      const btn = $("#docConfirmBtn");
+      const errEl = $("#docModalError");
+      errEl.style.display = "none";
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        await api(`/doc-obligations/${docResolving.id}/resolve`, {
+          method: "POST",
+          body: JSON.stringify({ method: $("#docMethod").value, note: $("#docNote").value }),
+        });
+        $("#docModal").style.display = "none";
+        docResolving = null;
+        toast("Documentation recorded");
+        api("/doc-obligations").then(renderDocObligations).catch(() => {});
+      } catch (err) {
+        errEl.textContent = err.message || "Could not save.";
+        errEl.style.display = "block";
+      } finally {
+        btn.disabled = false; btn.textContent = "Mark documented";
+      }
+    });
 
     // ── Render: Overview ──
     function renderOverview() {
@@ -2041,11 +2159,13 @@
           if (getOrgView()) {
             api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
             api("/org/point-config").then(renderPointConfig).catch(() => {});
+            api("/org/features").then(renderFeatures).catch(() => {});
           }
           loadScrapeRequests();
         } else {
           api("/org/pulse-credentials").then(renderPulseStatus).catch(() => {});
           api("/org/point-config").then(renderPointConfig).catch(() => {});
+          api("/org/features").then(renderFeatures).catch(() => {});
         }
       } catch (err) {
         if (err.message !== "unauthorized") toast("Admin load failed: " + err.message, true);
@@ -2147,6 +2267,28 @@
         errEl.classList.remove("hidden");
       } finally {
         btn.disabled = false; btn.textContent = "Save & connect";
+      }
+    });
+
+    // ── Feature switches (org owners + platform admin) ──
+    function renderFeatures(resp) {
+      const cb = $("#featWrittenDocs");
+      if (cb) cb.checked = !!(resp && resp.features && resp.features.written_docs);
+    }
+
+    const featWrittenDocs = $("#featWrittenDocs");
+    if (featWrittenDocs) featWrittenDocs.addEventListener("change", async (e) => {
+      const on = e.target.checked;
+      e.target.disabled = true;
+      try {
+        await api("/org/features", { method: "PUT", body: JSON.stringify({ written_docs: on }) });
+        toast(on ? "Written documentation tracking is on" : "Written documentation tracking is off");
+        api("/doc-obligations").then(renderDocObligations).catch(() => {});
+      } catch (err) {
+        e.target.checked = !on;
+        toast("Could not save: " + err.message, true);
+      } finally {
+        e.target.disabled = false;
       }
     });
 
