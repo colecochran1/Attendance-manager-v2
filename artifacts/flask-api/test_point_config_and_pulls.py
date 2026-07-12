@@ -162,6 +162,41 @@ r = c.get(f"/api/day-stats?date={yesterday}", headers=own_b)
 check("day-stats is store-scoped (beta sees no alpha stores)",
       {s["store"] for s in r.get_json()["stores"]}.isdisjoint({"1001", "1002"}))
 
+# ── Auto-provisioned store accounts on first import ──────────────────────────
+r = c.post("/api/import", headers=dict(KEY, **{"X-Org-Slug": "alpha-pizza"}), json={
+    "records": [{"employee_id": "N1", "name": "New Guy", "store": "1003",
+                 "logs": [{"date": yesterday, "status": "late", "minutes_late": 10}]}],
+})
+check("import with a brand-new store succeeds", r.status_code == 201)
+r = c.post("/api/dashboard/login", json={"username": "1003", "password": "1003"})
+check("new store gets an auto account (store# / store#)", r.status_code == 200
+      and r.get_json()["role"] == "store")
+tok_1003 = {"X-Dashboard-Token": r.get_json()["token"]}
+r = c.get("/api/stores", headers=tok_1003)
+check("auto account is scoped to its own store",
+      {s["store"] for s in r.get_json()} == {"1003"})
+r = c.post("/api/dashboard/login", json={"username": "1001", "password": "1001"})
+check("pre-existing store (not first import) gets no auto account", r.status_code != 200)
+
+# ── Self-service password change ──────────────────────────────────────────────
+r = c.post("/api/me/password", headers=tok_1003,
+           json={"current_password": "wrong", "new_password": "newpass1"})
+check("wrong current password rejected", r.status_code == 403)
+r = c.post("/api/me/password", headers=tok_1003,
+           json={"current_password": "1003", "new_password": "short"})
+check("too-short new password rejected", r.status_code == 400)
+r = c.post("/api/me/password", headers=tok_1003,
+           json={"current_password": "1003", "new_password": "newpass1"})
+check("store account can change its own password", r.status_code == 200)
+check("old password stops working",
+      c.post("/api/dashboard/login", json={"username": "1003", "password": "1003"}).status_code != 200)
+check("new password works",
+      c.post("/api/dashboard/login", json={"username": "1003", "password": "newpass1"}).status_code == 200)
+r = c.post("/api/import", headers=dict(KEY, **{"X-Org-Slug": "alpha-pizza"}), json={
+    "records": [{"employee_id": "N1", "name": "New Guy", "store": "1003", "logs": []}]})
+check("re-import never resets a changed password",
+      c.post("/api/dashboard/login", json={"username": "1003", "password": "newpass1"}).status_code == 200)
+
 # ── Store deletion ───────────────────────────────────────────────────────────
 r = c.patch("/api/stores/9999", headers=KEY, json={"org_id": alpha, "name": "Test Store"})
 assert r.status_code in (200, 201), r.get_data()

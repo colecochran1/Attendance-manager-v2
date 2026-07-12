@@ -506,6 +506,9 @@
           <button class="icon-btn" id="refreshBtn" title="Refresh" aria-label="Refresh">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
           </button>
+          <button class="icon-btn" id="pwBtn" title="Change password" aria-label="Change password">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          </button>
           <button class="icon-btn" id="logoutBtn" title="Sign out" aria-label="Sign out">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           </button>
@@ -914,6 +917,23 @@
     </main>
   </div>
 
+  <!-- Change-password modal -->
+  <div id="pwModal" class="modal-backdrop">
+    <div class="modal-card">
+      <h3>Change password</h3>
+      <p>Pick something only you know — store accounts start with the store number as the password.</p>
+      <label class="field-label" for="pwCurrent">Current password</label>
+      <input type="password" id="pwCurrent" autocomplete="current-password" style="margin:5px 0 12px" />
+      <label class="field-label" for="pwNew">New password (6+ characters)</label>
+      <input type="password" id="pwNew" autocomplete="new-password" style="margin:5px 0 10px" />
+      <div id="pwModalError" class="error" style="display:none;margin-bottom:10px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" id="pwCancelBtn" style="padding:10px 16px">Cancel</button>
+        <button class="btn btn-sm" id="pwSaveBtn" style="padding:10px 16px">Change password</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Written-documentation resolution modal -->
   <div id="docModal" class="modal-backdrop">
     <div class="modal-card">
@@ -1155,6 +1175,36 @@
     });
 
     $("#logoutBtn").addEventListener("click", () => { showLogin(); });
+
+    // ── Change own password ──
+    $("#pwBtn").addEventListener("click", () => {
+      $("#pwCurrent").value = ""; $("#pwNew").value = "";
+      $("#pwModalError").style.display = "none";
+      $("#pwModal").style.display = "flex";
+    });
+    $("#pwCancelBtn").addEventListener("click", () => { $("#pwModal").style.display = "none"; });
+    $("#pwSaveBtn").addEventListener("click", async () => {
+      const btn = $("#pwSaveBtn");
+      const errEl = $("#pwModalError");
+      errEl.style.display = "none";
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        await api("/me/password", {
+          method: "POST",
+          body: JSON.stringify({
+            current_password: $("#pwCurrent").value,
+            new_password: $("#pwNew").value,
+          }),
+        });
+        $("#pwModal").style.display = "none";
+        toast("Password changed");
+      } catch (err) {
+        errEl.textContent = err.message || "Could not change password.";
+        errEl.style.display = "block";
+      } finally {
+        btn.disabled = false; btn.textContent = "Change password";
+      }
+    });
     $("#orgViewSel").addEventListener("change", () => {
       setOrgView($("#orgViewSel").value);
       updateBrandSub();

@@ -22,7 +22,7 @@ PUBLIC_PATHS = {"/api/healthz", "/", "/favicon.ico", "/api/dashboard/login"}
 # Write endpoints a non-owner (DM / store) account may still call (POST only).
 # Everything else that mutates data is owner-only. DMs/stores can request point
 # redemptions for their own stores; an owner approves them.
-NON_OWNER_WRITE_ALLOWED = {"/api/redemptions"}
+NON_OWNER_WRITE_ALLOWED = {"/api/redemptions", "/api/me/password"}
 WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 
 # Dashboard sessions: a short-lived token signed with SESSION_SECRET, encoding the
@@ -568,6 +568,26 @@ def _resolve_import_org():
     return row["id"], None
 
 
+def _ensure_store(cur, store, org_id):
+    """Upsert a store row for an import. The first time a store appears for an
+    org, also provision its dashboard login: username = password = the store
+    number (role 'store', scoped to that store). GMs change the password from
+    the key icon in the top bar. Never touches existing usernames."""
+    cur.execute("SELECT store FROM stores WHERE store = %s", (store,))
+    is_new = cur.fetchone() is None
+    cur.execute(
+        "INSERT INTO stores (store, org_id) VALUES (%s, %s) "
+        "ON CONFLICT (store) DO UPDATE SET org_id = COALESCE(stores.org_id, EXCLUDED.org_id)",
+        (store, org_id),
+    )
+    if is_new and org_id:
+        cur.execute(
+            "INSERT INTO users (username, password_hash, role, store, org_id) "
+            "VALUES (%s, %s, 'store', %s, %s) ON CONFLICT (username) DO NOTHING",
+            (store, generate_password_hash(store), store, org_id),
+        )
+
+
 @app.route("/api/import", methods=["POST"])
 def import_attendance():
     data = request.get_json(silent=True)
@@ -606,11 +626,7 @@ def import_attendance():
         store = record.get("store")
         if store and store not in seen_stores:
             seen_stores.add(store)
-            cur.execute(
-                "INSERT INTO stores (store, org_id) VALUES (%s, %s) "
-                "ON CONFLICT (store) DO UPDATE SET org_id = COALESCE(stores.org_id, EXCLUDED.org_id)",
-                (store, org_id),
-            )
+            _ensure_store(cur, store, org_id)
 
         cur.execute(
             """
@@ -672,11 +688,7 @@ def import_attendance():
         count = ds.get("scheduled_count")
         if not store or not date or count is None:
             continue
-        cur.execute(
-            "INSERT INTO stores (store, org_id) VALUES (%s, %s) "
-            "ON CONFLICT (store) DO UPDATE SET org_id = COALESCE(stores.org_id, EXCLUDED.org_id)",
-            (store, org_id),
-        )
+        _ensure_store(cur, store, org_id)
         cur.execute(
             "INSERT INTO imported_batches (store, date, scheduled_count) VALUES (%s, %s, %s) "
             "ON CONFLICT (store, date) DO UPDATE SET scheduled_count = EXCLUDED.scheduled_count",
@@ -1712,6 +1724,32 @@ def user_item(uid):
     cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", params)
     db.commit()
     return jsonify({"updated": True, "id": uid})
+
+
+@app.route("/api/me/password", methods=["POST"])
+def change_own_password():
+    """Any logged-in dashboard user may change their own password (store
+    accounts start with the store number as the default)."""
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "API-key callers have no password"}), 400
+    data = request.get_json(silent=True) or {}
+    current = data.get("current_password") or ""
+    new = data.get("new_password") or ""
+    if len(new) < 6:
+        return jsonify({"error": "New password must be at least 6 characters"}), 400
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT password_hash FROM users WHERE id = %s", (user["id"],))
+    row = row_to_dict(cur)
+    if not row or not check_password_hash(row["password_hash"], current):
+        return jsonify({"error": "Current password is incorrect"}), 403
+    cur.execute(
+        "UPDATE users SET password_hash = %s WHERE id = %s",
+        (generate_password_hash(new), user["id"]),
+    )
+    db.commit()
+    return jsonify({"ok": True})
 
 
 # ── Organizations (platform admin only) ───────────────────────────────────────
