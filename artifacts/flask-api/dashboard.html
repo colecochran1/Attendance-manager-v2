@@ -595,6 +595,9 @@
             <select id="stageFilter">
               <option value="">All stages</option>
             </select>
+            <select id="rosterStoreFilter" class="manager-only">
+              <option value="">All stores</option>
+            </select>
           </div>
           <div class="table-wrap" id="employeesWrap">
             <div class="loading"><span class="spinner"></span></div>
@@ -1330,8 +1333,10 @@
         renderPointHistory();
         if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
         else if (getRole() === "dm") {
-          // DM Admin subset: their stores' store accounts (password resets).
+          // DM Admin subset: their stores' store accounts (password resets),
+          // plus store names for the roster store filter.
           api("/users").then((u) => { users = u; renderUsers(); }).catch(() => {});
+          api("/stores").then((s) => { storeList = s; renderEmployees(); }).catch(() => {});
         }
         api("/freshness").then(renderFreshness).catch(() => {});
         api("/doc-obligations").then(renderDocObligations).catch(() => {});
@@ -1776,7 +1781,6 @@
 
     // ── Render: Employees ──
     function renderEmployees() {
-      $("#empCount").textContent = `${stats.length} total`;
       // populate stage filter once
       const stageSel = $("#stageFilter");
       const stagesSeen = Array.from(new Set(stats.map((s) => s.disciplinary_stage).filter(Boolean)));
@@ -1785,9 +1789,23 @@
         stagesSeen.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
       stageSel.value = current;
 
+      // store filter (dm/owner): quick single-store view of everyone's points
+      const storeSel = $("#rosterStoreFilter");
+      const storesSeen = Array.from(new Set(stats.map((s) => s.store).filter(Boolean))).sort();
+      const curStore = storeSel.value;
+      storeSel.innerHTML = '<option value="">All stores</option>' +
+        storesSeen.map((s) => {
+          const st = storeList.find((x) => x.store === s);
+          return `<option value="${esc(s)}">${esc(s)}${st && st.name ? " · " + esc(st.name) : ""}</option>`;
+        }).join("");
+      storeSel.value = curStore;
+
       const filter = stageSel.value;
+      const storeFilter = storeSel.value;
       let rows = [...stats].sort((a, b) => b.active_points - a.active_points);
       if (filter) rows = rows.filter((r) => r.disciplinary_stage === filter);
+      if (storeFilter) rows = rows.filter((r) => r.store === storeFilter);
+      $("#empCount").textContent = (filter || storeFilter) ? `${rows.length} shown` : `${stats.length} total`;
 
       const wrap = $("#employeesWrap");
       if (!rows.length) { wrap.innerHTML = emptyState("👥", "No employees match."); return; }
@@ -1803,6 +1821,7 @@
       );
     }
     $("#stageFilter").addEventListener("change", renderEmployees);
+    $("#rosterStoreFilter").addEventListener("change", renderEmployees);
 
     // ── Render: Logs ──
     function renderLogs() {
@@ -2422,6 +2441,7 @@
       try {
         const [u, s] = await Promise.all([api("/users"), api("/stores")]);
         users = u; storeList = s;
+        renderEmployees(); // roster store filter shows store names once loaded
         // Populate the "store account" dropdown in the create-user form
         const storeSel = $("#userStore");
         if (storeSel) {
