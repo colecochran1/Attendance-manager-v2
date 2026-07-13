@@ -978,7 +978,6 @@
       <p id="detailMeta"></p>
       <div id="detailBody" style="max-height:50vh;overflow-y:auto;margin-bottom:16px"></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-red btn-sm hidden" id="detailTerminateBtn" style="margin-right:auto;padding:10px 16px">Terminate…</button>
         <button class="btn btn-ghost btn-sm" id="detailCloseBtn" style="padding:10px 16px">Close</button>
       </div>
     </div>
@@ -1566,13 +1565,15 @@
     // ── Overview detail modal (violation / needs-attention rows) ──
     let detailEmployeeId = null;
 
-    function logDispositionButtons(l) {
+    function logDispositionButtons(l, showTerminate) {
       // Same disposition actions as the Attendance tab; the existing
       // data-log-action delegation handles the clicks, and role-store CSS
-      // hides them for read-only store accounts.
+      // hides them for read-only store accounts. Terminate applies to the
+      // employee (detailEmployeeId), not the individual log.
       return `${isNcnsLog(l) ? `<button class="btn btn-sm btn-warn" style="margin-right:6px" data-log-action="override" data-log-id="${l.id}">Covered</button>` : ""}
         <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-log-action="calloff" data-log-id="${l.id}" data-log-date="${l.date || ""}">Mark as call-off</button>
-        <button class="btn btn-sm btn-ghost" data-log-action="exempt" data-log-id="${l.id}">Exempt</button>`;
+        <button class="btn btn-sm btn-ghost" data-log-action="exempt" data-log-id="${l.id}">Exempt</button>${showTerminate ? `
+        <button class="btn btn-sm btn-red" style="margin-left:6px" data-log-action="terminate">Terminate…</button>` : ""}`;
     }
 
     function openDetailModal(employeeId, logId) {
@@ -1598,6 +1599,7 @@
         entryLogs = allLogs.filter((l) => ids.has(l.id));
       }
       entryLogs = [...entryLogs].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+      const showTerminate = canTerminate() && emp.active !== false;
       $("#detailBody").innerHTML = entryLogs.length
         ? tableHTML(
             ["Date", "Event", "Late", ""],
@@ -1605,13 +1607,10 @@
               <td>${esc(l.date || "—")}</td>
               <td><span class="pill ${statusPillForLog(l.status)}">${esc(logEventLabel(l))}</span></td>
               <td>${l.minutes_late != null ? esc(l.minutes_late) + "m" : "—"}</td>
-              <td data-label="" style="white-space:nowrap">${logDispositionButtons(l)}</td>
+              <td data-label="" style="white-space:nowrap">${logDispositionButtons(l, showTerminate)}</td>
             </tr>`).join("")
           )
         : emptyState("📋", "No point-driving entries in the window.");
-      const tBtn = $("#detailTerminateBtn");
-      tBtn.classList.toggle("hidden", !canTerminate() || emp.active === false);
-      tBtn.disabled = false; tBtn.textContent = "Terminate…";
       $("#detailModal").style.display = "flex";
     }
 
@@ -1629,11 +1628,10 @@
       openDetailModal(row.dataset.detailEmp, row.dataset.detailLog ?? null);
     });
 
-    $("#detailTerminateBtn").addEventListener("click", async () => {
+    async function handleTerminate(btn) {
       if (!detailEmployeeId) return;
       const name = empNames[detailEmployeeId] || detailEmployeeId;
       if (!confirm(`Terminate ${name}?\n\nThey will be marked inactive as of today and drop out of point tracking and attention lists (history is kept). Any open write-up obligation is closed.\n\nAre you sure?`)) return;
-      const btn = $("#detailTerminateBtn");
       btn.disabled = true; btn.textContent = "Terminating…";
       try {
         await api(`/employees/${encodeURIComponent(detailEmployeeId)}/terminate`, {
@@ -1647,7 +1645,7 @@
         toast(err.message || "Termination failed", true);
         btn.disabled = false; btn.textContent = "Terminate…";
       }
-    });
+    }
 
     // ── Render: Overview ──
     function renderOverview() {
@@ -1815,6 +1813,7 @@
       if (action === "exempt") openExemptModal(id, btn);
       else if (action === "override") handleLogOverride(id, btn);
       else if (action === "calloff") handleLogCallOff(id, btn);
+      else if (action === "terminate") handleTerminate(btn);
     });
 
     function openExemptModal(id, btn) {
