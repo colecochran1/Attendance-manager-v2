@@ -113,6 +113,14 @@ def init_db():
     cur.execute(
         "ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS manual_points NUMERIC"
     )
+    # Soft-deactivation (termination): inactive employees keep their history but
+    # drop out of stats, stage math, and attention views.
+    cur.execute(
+        "ALTER TABLE employees ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE"
+    )
+    cur.execute("ALTER TABLE employees ADD COLUMN IF NOT EXISTS terminated_at DATE")
+    cur.execute("ALTER TABLE employees ADD COLUMN IF NOT EXISTS terminated_by TEXT")
+    cur.execute("ALTER TABLE employees ADD COLUMN IF NOT EXISTS terminated_note TEXT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS shift_swaps (
             id              SERIAL PRIMARY KEY,
@@ -300,6 +308,25 @@ def init_db():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_obligations_one_open "
         "ON doc_obligations (employee_id) WHERE status = 'open'"
     )
+    # Operational alerts surfaced on the dashboard (e.g. a terminated employee
+    # clocking in). Rows stay until someone acknowledges them.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id               SERIAL PRIMARY KEY,
+            org_id           INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+            store            TEXT,
+            employee_id      TEXT REFERENCES employees(employee_id) ON DELETE CASCADE,
+            kind             TEXT NOT NULL,
+            message          TEXT,
+            created_at       TIMESTAMPTZ DEFAULT NOW(),
+            acknowledged_at  TIMESTAMPTZ,
+            acknowledged_by  TEXT
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alerts_unacked "
+        "ON alerts (store) WHERE acknowledged_at IS NULL"
+    )
     # How many people actually had a scheduled shift that store/day, reported
     # by the worker alongside imports. Logs can't answer this: they are
     # exception-based, so a clean day produces no rows at all.
@@ -380,6 +407,13 @@ def require_auth():
                 if re.fullmatch(r"/api/logs/\d+", request.path):
                     allowed = True
                 elif re.fullmatch(r"/api/redemptions/\d+", request.path):
+                    allowed = True
+            # DMs may terminate/reactivate employees and acknowledge alerts for
+            # their own stores; the store-scope check lives in the endpoint.
+            if user["role"] == "dm" and request.method == "POST":
+                if re.fullmatch(r"/api/employees/[^/]+/(terminate|reactivate)", request.path):
+                    allowed = True
+                elif re.fullmatch(r"/api/alerts/\d+/ack", request.path):
                     allowed = True
             if not allowed:
                 return jsonify({"error": "You don't have permission to make changes."}), 403
@@ -615,6 +649,8 @@ def import_attendance():
     seen_stores = set()
     errors = []
 
+    alerts_created = 0
+
     for i, record in enumerate(records):
         employee_id = record.get("employee_id") or record.get("employeeId")
         name = record.get("name")
@@ -636,9 +672,11 @@ def import_attendance():
                 name     = EXCLUDED.name,
                 position = COALESCE(EXCLUDED.position, employees.position),
                 store    = COALESCE(EXCLUDED.store, employees.store)
+            RETURNING name, store, active, terminated_at
             """,
             (employee_id, name, record.get("position"), store),
         )
+        emp_row = row_to_dict(cur)
         imported_employees += 1
 
         for log in record.get("logs", []):
@@ -646,6 +684,14 @@ def import_attendance():
             if not date:
                 continue
             if (store, date) in already_imported:
+                skipped_logs += 1
+                continue
+            # A terminated employee showing up in a punch/violation log on or
+            # after their last day means someone clocked them in anyway: raise
+            # a DM-facing alert instead of silently importing the row.
+            if (emp_row and not emp_row["active"] and emp_row["terminated_at"]
+                    and date >= str(emp_row["terminated_at"])):
+                alerts_created += _terminated_clock_in_alert(cur, org_id, emp_row, employee_id, date)
                 skipped_logs += 1
                 continue
 
@@ -700,10 +746,36 @@ def import_attendance():
         "imported_employees": imported_employees,
         "imported_logs": imported_logs,
         "skipped_logs": skipped_logs,
+        "alerts_created": alerts_created,
     }
     if errors:
         response["errors"] = errors
     return jsonify(response), 201
+
+
+def _terminated_clock_in_alert(cur, org_id, emp, employee_id, date):
+    """Record a 'terminated employee clocked in' alert, deduped: repeated
+    imports of the same day's data must not stack duplicates, so skip when an
+    unacknowledged alert for the same employee/day (identical message) already
+    exists. Returns how many alerts were created (0 or 1)."""
+    message = (
+        f"Terminated employee {emp['name']} ({employee_id}) has an attendance "
+        f"record at store {emp['store']} on {date} — their last day was "
+        f"{emp['terminated_at']}."
+    )
+    cur.execute(
+        "SELECT 1 FROM alerts WHERE kind = 'terminated_clock_in' "
+        "AND employee_id = %s AND message = %s AND acknowledged_at IS NULL",
+        (employee_id, message),
+    )
+    if cur.fetchone():
+        return 0
+    cur.execute(
+        "INSERT INTO alerts (org_id, store, employee_id, kind, message) "
+        "VALUES (%s, %s, %s, 'terminated_clock_in', %s)",
+        (org_id, emp["store"], employee_id, message),
+    )
+    return 1
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -807,6 +879,125 @@ def delete_employee(employee_id):
     return jsonify({"deleted": True, "employee_id": employee_id})
 
 
+def _terminable_employee(cur, employee_id):
+    """Look up an employee for terminate/reactivate and enforce who may do it:
+    platform admin, owner, and DMs for their own stores (the before_request
+    carve-out lets DM POSTs through; store accounts never get here).
+    Returns (employee_row, error_response)."""
+    user = current_user()
+    if user is not None and user["role"] not in ("platform_admin", "owner", "dm"):
+        return None, (jsonify({"error": "You don't have permission to make changes."}), 403)
+    cur.execute("SELECT * FROM employees WHERE employee_id = %s", (employee_id,))
+    emp = row_to_dict(cur)
+    if not emp:
+        return None, (jsonify({"error": f"Employee {employee_id} not found"}), 404)
+    allowed = allowed_stores()
+    if allowed is not None and emp["store"] not in allowed:
+        return None, (jsonify({"error": "That employee is outside your assigned stores"}), 403)
+    return emp, None
+
+
+@app.route("/api/employees/<employee_id>/terminate", methods=["POST"])
+def terminate_employee(employee_id):
+    db = get_db()
+    cur = db.cursor()
+    emp, err = _terminable_employee(cur, employee_id)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    last_day = (data.get("last_day") or "").strip() or datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        datetime.strptime(last_day, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": "last_day must be YYYY-MM-DD"}), 400
+    note = (data.get("note") or "").strip() or None
+    user = current_user()
+    cur.execute(
+        "UPDATE employees SET active = FALSE, terminated_at = %s, "
+        "terminated_by = %s, terminated_note = %s WHERE employee_id = %s RETURNING *",
+        (last_day, user["username"] if user else "api", note, employee_id),
+    )
+    emp = row_to_dict(cur)
+    # An open write-up obligation is moot once the employee is gone.
+    cur.execute(
+        "UPDATE doc_obligations SET status = 'lapsed' WHERE employee_id = %s AND status = 'open'",
+        (employee_id,),
+    )
+    db.commit()
+    return jsonify(emp)
+
+
+@app.route("/api/employees/<employee_id>/reactivate", methods=["POST"])
+def reactivate_employee(employee_id):
+    db = get_db()
+    cur = db.cursor()
+    emp, err = _terminable_employee(cur, employee_id)
+    if err:
+        return err
+    cur.execute(
+        "UPDATE employees SET active = TRUE, terminated_at = NULL, "
+        "terminated_by = NULL, terminated_note = NULL WHERE employee_id = %s RETURNING *",
+        (employee_id,),
+    )
+    emp = row_to_dict(cur)
+    db.commit()
+    return jsonify(emp)
+
+
+# ── Alerts (dm / owner / platform admin) ──────────────────────────────────────
+
+ALERT_ROLES = ("platform_admin", "owner", "dm")
+
+
+@app.route("/api/alerts", methods=["GET"])
+def list_alerts():
+    """Unacknowledged operational alerts for the caller's stores (?all=1 for
+    the full history). Store accounts don't see alerts — they are aimed at the
+    DM/owner level."""
+    user = current_user()
+    if user is not None and user["role"] not in ALERT_ROLES:
+        return jsonify({"error": "You don't have permission to view alerts."}), 403
+    db = get_db()
+    cur = db.cursor()
+    query = (
+        "SELECT a.*, e.name AS employee_name FROM alerts a "
+        "LEFT JOIN employees e ON e.employee_id = a.employee_id WHERE TRUE"
+    )
+    params = []
+    if request.args.get("all") not in ("1", "true"):
+        query += " AND a.acknowledged_at IS NULL"
+    scope, scope_params = store_scope_clause("a.store")
+    query += scope
+    params += scope_params
+    query += " ORDER BY a.created_at DESC"
+    cur.execute(query, params)
+    return jsonify(rows_to_list(cur))
+
+
+@app.route("/api/alerts/<int:aid>/ack", methods=["POST"])
+def ack_alert(aid):
+    user = current_user()
+    if user is not None and user["role"] not in ALERT_ROLES:
+        return jsonify({"error": "You don't have permission to make changes."}), 403
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM alerts WHERE id = %s", (aid,))
+    alert = row_to_dict(cur)
+    if not alert:
+        return jsonify({"error": "Alert not found"}), 404
+    allowed = allowed_stores()
+    if allowed is not None and alert["store"] not in allowed:
+        return jsonify({"error": "Alert not found"}), 404
+    if alert["acknowledged_at"]:
+        return jsonify({"error": "This alert was already acknowledged."}), 409
+    cur.execute(
+        "UPDATE alerts SET acknowledged_at = NOW(), acknowledged_by = %s WHERE id = %s",
+        (user["username"] if user else "api", aid),
+    )
+    db.commit()
+    return jsonify({"ok": True, "id": aid})
+
+
 # ── Attendance logs ───────────────────────────────────────────────────────────
 
 @app.route("/api/logs", methods=["GET"])
@@ -820,7 +1011,7 @@ def get_logs():
     store = request.args.get("store")
     query = (
         "SELECT l.*, e.name AS employee_name, e.store AS employee_store, "
-        "e.position AS employee_position "
+        "e.position AS employee_position, e.active AS employee_active "
         "FROM attendance_logs l "
         "LEFT JOIN employees e ON l.employee_id = e.employee_id "
         "WHERE TRUE"
@@ -1143,7 +1334,7 @@ def compute_stats(employee_id=None, store=None, window_days=90):
     db = get_db()
     cur = db.cursor()
     since = (datetime.utcnow() - timedelta(days=window_days)).strftime("%Y-%m-%d")
-    emp_query = "SELECT * FROM employees WHERE TRUE"
+    emp_query = "SELECT * FROM employees WHERE active"
     emp_params = []
     if employee_id:
         emp_query += " AND employee_id = %s"
@@ -1286,7 +1477,7 @@ def get_streaks():
     cur = db.cursor()
     limit = int(request.args.get("limit", 10))
 
-    emp_query = "SELECT * FROM employees WHERE TRUE"
+    emp_query = "SELECT * FROM employees WHERE active"
     emp_params = []
     scope, scope_params = store_scope_clause("store")
     emp_query += scope

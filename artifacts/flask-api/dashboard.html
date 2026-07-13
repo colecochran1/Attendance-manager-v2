@@ -547,6 +547,7 @@
         </div>
         <div id="freshnessBanner" class="banner-warn hidden"></div>
         <div class="fresh-row" id="freshnessChips"></div>
+        <div id="alertsPanel" class="doc-panel hidden"></div>
         <div id="docPanel" class="doc-panel hidden"></div>
         <div class="cards" id="summaryCards">
           <div class="loading"><span class="spinner"></span></div>
@@ -970,6 +971,19 @@
     </div>
   </div>
 
+  <!-- Overview detail modal (violation / needs-attention rows) -->
+  <div id="detailModal" class="modal-backdrop">
+    <div class="modal-card" style="width:min(560px,100%)">
+      <h3 id="detailTitle"></h3>
+      <p id="detailMeta"></p>
+      <div id="detailBody" style="max-height:50vh;overflow-y:auto;margin-bottom:16px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-red btn-sm hidden" id="detailTerminateBtn" style="margin-right:auto;padding:10px 16px">Terminate…</button>
+        <button class="btn btn-ghost btn-sm" id="detailCloseBtn" style="padding:10px 16px">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     "use strict";
     const TOKEN_STORE = "attendance_dash_token";
@@ -1288,6 +1302,7 @@
         if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
         api("/freshness").then(renderFreshness).catch(() => {});
         api("/doc-obligations").then(renderDocObligations).catch(() => {});
+        if (canTerminate()) api("/alerts").then(renderAlerts).catch(() => {});
         api("/day-stats?date=" + yesterdayStr())
           .then((d) => { dayStats = d; renderYesterday(); })
           .catch(() => {});
@@ -1345,7 +1360,8 @@
       });
       $("#yesterdayDate").textContent = dateLabel;
 
-      const dayLogs = allLogs.filter((l) => l.date === yest);
+      // Terminated employees drop out of the day view (employee_active=false).
+      const dayLogs = allLogs.filter((l) => l.date === yest && l.employee_active !== false);
       const weekend = isWeekendDate(yest);
 
       // Real scheduled headcount from the worker (imported_batches). Logs are
@@ -1401,7 +1417,7 @@
           const ptsCell = pts === "ncns"
             ? '<span class="pill stage-term">NCNS</span>'
             : `<strong>${finalPts}</strong>`;
-          return `<tr>
+          return `<tr data-detail-emp="${esc(l.employee_id)}" data-detail-log="${l.id}" style="cursor:pointer">
             <td><div class="name">${name}</div></td>
             <td>${store}</td>
             <td><span class="pill ${statusPillForLog(l.status)}">${esc(logEventLabel(l))}</span></td>
@@ -1513,6 +1529,126 @@
       }
     });
 
+    // ── Alerts (dm / owner / platform admin) ──
+    const canTerminate = () => ["dm", "owner", "platform_admin"].includes(getRole());
+    let alerts = [];
+
+    function renderAlerts(list) {
+      alerts = list || [];
+      const panel = $("#alertsPanel");
+      if (!panel) return;
+      if (!alerts.length) { panel.innerHTML = ""; panel.classList.add("hidden"); return; }
+      panel.innerHTML =
+        `<h3>🚨 Alerts (${alerts.length})</h3>
+         <p class="doc-intro">These need a look — acknowledging clears them from this list.</p>` +
+        alerts.map((a) => `<div class="doc-item">
+          <div class="doc-who" style="flex:1 1 220px">${esc(a.message)}</div>
+          <span class="doc-meta">${esc((a.created_at || "").slice(0, 10))}</span>
+          <button class="btn" data-alert-ack="${a.id}">Acknowledge</button>
+        </div>`).join("");
+      panel.classList.remove("hidden");
+    }
+
+    $("#alertsPanel").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-alert-ack]");
+      if (!btn || btn.disabled) return;
+      btn.disabled = true; btn.textContent = "…";
+      try {
+        await api(`/alerts/${btn.dataset.alertAck}/ack`, { method: "POST" });
+        toast("Alert acknowledged");
+        api("/alerts").then(renderAlerts).catch(() => {});
+      } catch (err) {
+        toast(err.message || "Could not acknowledge alert", true);
+        btn.disabled = false; btn.textContent = "Acknowledge";
+      }
+    });
+
+    // ── Overview detail modal (violation / needs-attention rows) ──
+    let detailEmployeeId = null;
+
+    function logDispositionButtons(l) {
+      // Same disposition actions as the Attendance tab; the existing
+      // data-log-action delegation handles the clicks, and role-store CSS
+      // hides them for read-only store accounts.
+      return `${isNcnsLog(l) ? `<button class="btn btn-sm btn-warn" style="margin-right:6px" data-log-action="override" data-log-id="${l.id}">Covered</button>` : ""}
+        <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-log-action="calloff" data-log-id="${l.id}" data-log-date="${l.date || ""}">Mark as call-off</button>
+        <button class="btn btn-sm btn-ghost" data-log-action="exempt" data-log-id="${l.id}">Exempt</button>`;
+    }
+
+    function openDetailModal(employeeId, logId) {
+      const st = stats.find((s) => s.employee_id === employeeId);
+      const emp = employees.find((e) => e.employee_id === employeeId) || {};
+      detailEmployeeId = employeeId;
+      $("#detailTitle").textContent = (st && st.name) || emp.name || empNames[employeeId] || employeeId;
+      const bits = [];
+      const position = emp.position || (st && st.position);
+      const store = (st && st.store) || emp.store;
+      if (position) bits.push(position);
+      if (store) bits.push("Store " + store);
+      if (st) bits.push(`${st.active_points} active pts`);
+      $("#detailMeta").innerHTML = esc(bits.join(" · ")) +
+        (st ? ` <span class="pill ${stageClass(st.disciplinary_stage)}">${esc(st.disciplinary_stage)}</span>` : "");
+      // Scoped log list: one specific instance (violation row), or every
+      // point-driving entry in the window (needs-attention row).
+      let entryLogs;
+      if (logId != null) {
+        entryLogs = allLogs.filter((l) => String(l.id) === String(logId));
+      } else {
+        const ids = new Set(((st && st.point_log) || []).map((r) => r.log_id));
+        entryLogs = allLogs.filter((l) => ids.has(l.id));
+      }
+      entryLogs = [...entryLogs].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+      $("#detailBody").innerHTML = entryLogs.length
+        ? tableHTML(
+            ["Date", "Event", "Late", ""],
+            entryLogs.map((l) => `<tr>
+              <td>${esc(l.date || "—")}</td>
+              <td><span class="pill ${statusPillForLog(l.status)}">${esc(logEventLabel(l))}</span></td>
+              <td>${l.minutes_late != null ? esc(l.minutes_late) + "m" : "—"}</td>
+              <td data-label="" style="white-space:nowrap">${logDispositionButtons(l)}</td>
+            </tr>`).join("")
+          )
+        : emptyState("📋", "No point-driving entries in the window.");
+      const tBtn = $("#detailTerminateBtn");
+      tBtn.classList.toggle("hidden", !canTerminate() || emp.active === false);
+      tBtn.disabled = false; tBtn.textContent = "Terminate…";
+      $("#detailModal").style.display = "flex";
+    }
+
+    function closeDetailModal() {
+      $("#detailModal").style.display = "none";
+      detailEmployeeId = null;
+    }
+    $("#detailCloseBtn").addEventListener("click", closeDetailModal);
+
+    // Row click → detail modal (buttons inside rows keep their own actions)
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("button, select, a, input")) return;
+      const row = e.target.closest("tr[data-detail-emp]");
+      if (!row) return;
+      openDetailModal(row.dataset.detailEmp, row.dataset.detailLog ?? null);
+    });
+
+    $("#detailTerminateBtn").addEventListener("click", async () => {
+      if (!detailEmployeeId) return;
+      const name = empNames[detailEmployeeId] || detailEmployeeId;
+      if (!confirm(`Terminate ${name}?\n\nThey will be marked inactive as of today and drop out of point tracking and attention lists (history is kept). Any open write-up obligation is closed.\n\nAre you sure?`)) return;
+      const btn = $("#detailTerminateBtn");
+      btn.disabled = true; btn.textContent = "Terminating…";
+      try {
+        await api(`/employees/${encodeURIComponent(detailEmployeeId)}/terminate`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        toast(`${name} terminated`);
+        closeDetailModal();
+        loadAll();
+      } catch (err) {
+        toast(err.message || "Termination failed", true);
+        btn.disabled = false; btn.textContent = "Terminate…";
+      }
+    });
+
     // ── Render: Overview ──
     function renderOverview() {
       const total = stats.length;
@@ -1538,7 +1674,7 @@
       wrap.innerHTML = tableHTML(
         ["Employee", "Points", "Stage"],
         flagged.map((r) => `
-          <tr>
+          <tr data-detail-emp="${esc(r.employee_id)}" style="cursor:pointer">
             <td><div class="name">${esc(r.name)}</div><div class="sub">${esc(r.position || "")}${r.store ? " · " + esc(r.store) : ""}</div></td>
             <td class="points">${r.active_points}</td>
             <td><span class="pill ${stageClass(r.disciplinary_stage)}">${esc(r.disciplinary_stage)}</span></td>
@@ -1722,6 +1858,7 @@
         const allIdx = allLogs.findIndex((l) => String(l.id) === String(id));
         if (allIdx > -1) allLogs[allIdx] = updated;
         stats = await api("/stats");
+        closeDetailModal();
         renderLogs();
         renderYesterday();
         renderOverview();
@@ -1753,8 +1890,12 @@
         if (idx > -1) logs[idx] = updated;
         const allIdx = allLogs.findIndex((l) => String(l.id) === String(id));
         if (allIdx > -1) allLogs[allIdx] = updated;
+        stats = await api("/stats");
+        closeDetailModal();
         renderLogs();
         renderYesterday();
+        renderOverview();
+        renderEmployees();
         toast(`Marked as call-off — ${pts} point${pts !== 1 ? "s" : ""} assigned`);
       } catch (err) {
         if (err.message !== "unauthorized") toast("Update failed: " + err.message, true);
@@ -1776,8 +1917,12 @@
         if (idx > -1) logs[idx] = updated;
         const allIdx = allLogs.findIndex((l) => String(l.id) === String(id));
         if (allIdx > -1) allLogs[allIdx] = updated;
+        stats = await api("/stats");
+        closeDetailModal();
         renderLogs();
         renderYesterday();
+        renderOverview();
+        renderEmployees();
         toast("NCNS overridden — points cleared");
       } catch (err) {
         if (err.message !== "unauthorized") toast("Override failed: " + err.message, true);
@@ -1803,7 +1948,7 @@
       const empSel = $("#apEmp");
       if (empSel) {
         const cur = empSel.value;
-        const sorted = [...employees].sort((a, b) => a.name.localeCompare(b.name));
+        const sorted = employees.filter((e) => e.active !== false).sort((a, b) => a.name.localeCompare(b.name));
         empSel.innerHTML = '<option value="">Select employee…</option>' +
           sorted.map((e) => `<option value="${esc(e.employee_id)}">${esc(e.name)}</option>`).join("");
         if (cur) empSel.value = cur;
@@ -1991,7 +2136,7 @@
       const sel = $("#phEmp");
       if (!sel) return;
       const cur = sel.value;
-      const sorted = [...employees].sort((a, b) => a.name.localeCompare(b.name));
+      const sorted = employees.filter((e) => e.active !== false).sort((a, b) => a.name.localeCompare(b.name));
       sel.innerHTML = '<option value="">Select a team member…</option>' +
         sorted.map(e => `<option value="${esc(e.employee_id)}">${esc(e.name)}</option>`).join("");
       if (cur) { sel.value = cur; }
