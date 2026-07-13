@@ -119,6 +119,8 @@
     .btn-warn:hover { background: #c2410c; }
     .role-store [data-log-action] { display: none !important; }
     .role-readonly .supervisor-only { display: none !important; }
+    /* manager-only: owner/platform AND dm (hidden only from store accounts) */
+    .role-store .manager-only { display: none !important; }
     body:not(.role-platform) .platform-only { display: none !important; }
     body.role-platform .org-owner-only { display: none !important; }
     /* With an org selected in the switcher, the platform admin manages that
@@ -535,7 +537,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           <span>Points</span>
         </button>
-        <button class="nav-btn supervisor-only" data-section="admin">
+        <button class="nav-btn manager-only" data-section="admin">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <span>Admin</span>
         </button>
@@ -641,7 +643,7 @@
         <div class="section-head"><h2>Points</h2></div>
         <div class="subtabs">
           <button class="subtab active" data-subtab="redemptions">Redemptions</button>
-          <button class="subtab supervisor-only" data-subtab="addpoints">Manual Points</button>
+          <button class="subtab manager-only" data-subtab="addpoints">Manual Points</button>
           <button class="subtab supervisor-only" data-subtab="pointreset">Reset</button>
         </div>
 
@@ -695,7 +697,7 @@
         </div>
 
         <!-- Add Points (supervisor only) -->
-        <div class="subpanel supervisor-only" id="sub-addpoints">
+        <div class="subpanel manager-only" id="sub-addpoints">
           <div class="form-panel">
             <h3>New point entry</h3>
             <form id="addPointsForm">
@@ -768,8 +770,8 @@
         </div>
       </section>
 
-      <!-- ═══ Admin (owner only) ═══ -->
-      <section class="panel supervisor-only" id="panel-admin">
+      <!-- ═══ Admin (owners; DMs get a scoped subset) ═══ -->
+      <section class="panel manager-only" id="panel-admin">
 
         <!-- Platform console (Slicework operator only) -->
         <div class="section-head platform-only"><h2>Organizations</h2><span class="muted">Slicework platform console</span></div>
@@ -800,7 +802,7 @@
         </div>
 
         <!-- Pulse connection (org owners) -->
-        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+        <div class="form-panel org-owner-only supervisor-only" style="margin-bottom:28px">
           <h3>Pulse data connection <span class="pill" id="pulseStatusPill" style="margin-left:8px">…</span></h3>
           <p class="muted" style="margin:0 0 14px">Connect your Pulse Web Reporting login and attendance data is imported automatically every night. Your password is encrypted the moment you save it — this web app stores only the encrypted value and cannot read it; only the isolated data worker can.</p>
           <form id="pulseForm">
@@ -821,7 +823,7 @@
         </div>
 
         <!-- Written documentation (org owners + platform admin) -->
-        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+        <div class="form-panel org-owner-only supervisor-only" style="margin-bottom:28px">
           <h3>Written documentation</h3>
           <p class="muted" style="margin:0 0 14px">When enabled, employees who reach Written Warning or beyond appear as an action item on the Overview page — visible to the store, its district manager, and the owner — until someone marks the write-up as completed. Complete the documentation the way your organization normally does (Zenput, paper form, etc.), then mark it done.</p>
           <label style="display:flex;align-items:center;gap:10px;font-size:.9rem;cursor:pointer">
@@ -831,7 +833,7 @@
         </div>
 
         <!-- Point settings (org owners + platform admin) -->
-        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+        <div class="form-panel org-owner-only supervisor-only" style="margin-bottom:28px">
           <h3>Point settings</h3>
           <p class="muted" style="margin:0 0 14px">How attendance points are assigned for this organization. Changes apply immediately to everyone's active point totals and disciplinary stages.</p>
           <form id="pointCfgForm">
@@ -880,12 +882,12 @@
           <button class="btn btn-red" type="button" id="termOpenBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Terminate team member…</button>
         </div>
 
-        <div class="section-head"><h2>Store Assignments</h2><span class="muted">Assign each store to a district manager</span></div>
-        <div class="table-wrap" id="assignmentsWrap">
+        <div class="section-head supervisor-only"><h2>Store Assignments</h2><span class="muted">Assign each store to a district manager</span></div>
+        <div class="table-wrap supervisor-only" id="assignmentsWrap">
           <div class="loading"><span class="spinner"></span></div>
         </div>
 
-        <div class="form-panel" style="margin-top:24px">
+        <div class="form-panel supervisor-only" style="margin-top:24px">
           <h3>Add user account</h3>
           <form id="userForm">
             <div class="rform-grid">
@@ -920,7 +922,7 @@
           </form>
         </div>
 
-        <div class="section-head sub"><h2>User accounts</h2><span class="muted" id="userCount"></span></div>
+        <div class="section-head sub"><h2 id="usersHeading">User accounts</h2><span class="muted" id="userCount"></span></div>
         <div class="table-wrap" id="usersWrap">
           <div class="loading"><span class="spinner"></span></div>
         </div>
@@ -1327,6 +1329,10 @@
         renderAddPoints();
         renderPointHistory();
         if (isOwner()) { loadAdmin(); populateResetStoreSelect(); loadPointResets(); }
+        else if (getRole() === "dm") {
+          // DM Admin subset: their stores' store accounts (password resets).
+          api("/users").then((u) => { users = u; renderUsers(); }).catch(() => {});
+        }
         api("/freshness").then(renderFreshness).catch(() => {});
         api("/doc-obligations").then(renderDocObligations).catch(() => {});
         if (canTerminate()) api("/alerts").then(renderAlerts).catch(() => {});
@@ -2689,6 +2695,10 @@
     function renderUsers() {
       const wrap = $("#usersWrap");
       const cnt = $("#userCount");
+      // DMs get a scoped view: just their stores' store accounts, reset-only.
+      const dmView = getRole() === "dm";
+      const heading = $("#usersHeading");
+      if (heading) heading.textContent = dmView ? "Store accounts" : "User accounts";
       if (cnt) cnt.textContent = users.length ? `${users.length} account${users.length === 1 ? "" : "s"}` : "";
       if (!wrap) return;
       if (!users.length) { wrap.innerHTML = emptyState("👤", "No accounts yet"); return; }
@@ -2706,8 +2716,8 @@
             <td>${esc(ROLE_LABELS[u.role] || u.role)}</td>
             <td>${scope}</td>
             <td data-label="" style="white-space:nowrap">
-              <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-user-action="resetpw" data-user-id="${u.id}" data-user-name="${esc(u.username)}">Reset password</button>
-              <button class="btn btn-sm btn-ghost" data-user-action="delete" data-user-id="${u.id}" data-user-name="${esc(u.username)}">Delete</button>
+              <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-user-action="resetpw" data-user-id="${u.id}" data-user-name="${esc(u.username)}">Reset password</button>${dmView ? "" : `
+              <button class="btn btn-sm btn-ghost" data-user-action="delete" data-user-id="${u.id}" data-user-name="${esc(u.username)}">Delete</button>`}
             </td>
           </tr>`;
         }).join("")

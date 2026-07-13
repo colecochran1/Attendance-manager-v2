@@ -408,12 +408,19 @@ def require_auth():
                     allowed = True
                 elif re.fullmatch(r"/api/redemptions/\d+", request.path):
                     allowed = True
-            # DMs may terminate/reactivate employees and acknowledge alerts for
-            # their own stores; the store-scope check lives in the endpoint.
+                # DMs may reset passwords on their stores' store accounts; the
+                # endpoint restricts them to password-only PATCHes in scope.
+                elif request.method == "PATCH" and re.fullmatch(r"/api/users/\d+", request.path):
+                    allowed = True
+            # DMs may terminate/reactivate employees, acknowledge alerts, and
+            # add attendance/manual-point entries for their own stores; the
+            # store-scope check lives in the endpoint.
             if user["role"] == "dm" and request.method == "POST":
                 if re.fullmatch(r"/api/employees/[^/]+/(terminate|reactivate)", request.path):
                     allowed = True
                 elif re.fullmatch(r"/api/alerts/\d+/ack", request.path):
+                    allowed = True
+                elif request.path == "/api/logs":
                     allowed = True
             if not allowed:
                 return jsonify({"error": "You don't have permission to make changes."}), 403
@@ -1050,9 +1057,13 @@ def create_log():
         return jsonify({"error": "employee_id, status, and date are required"}), 400
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT employee_id FROM employees WHERE employee_id = %s", (employee_id,))
-    if not cur.fetchone():
+    cur.execute("SELECT employee_id, store FROM employees WHERE employee_id = %s", (employee_id,))
+    emp_row = cur.fetchone()
+    if not emp_row:
         return jsonify({"error": "Employee not found"}), 404
+    scope = allowed_stores()
+    if scope is not None and emp_row["store"] not in scope:
+        return jsonify({"error": "That employee is outside your assigned stores"}), 403
     clock_in = (data.get("clock_in") or "").strip() or None
     clock_out = (data.get("clock_out") or "").strip() or None
     hours = data.get("hours")
@@ -1793,6 +1804,22 @@ def list_point_resets():
 
 @app.route("/api/users", methods=["GET", "POST"])
 def users_collection():
+    caller_dm = current_user()
+    if (request.method == "GET" and caller_dm is not None
+            and caller_dm["role"] == "dm"):
+        # DMs see just the store accounts for their assigned stores, so they
+        # can reset a store login's password without needing the owner.
+        scope = sorted(allowed_stores() or set())
+        cur = get_db().cursor()
+        cur.execute(
+            "SELECT u.id, u.username, u.role, u.store, u.org_id, "
+            "o.name AS org_name, u.created_at, '{}'::text[] AS dm_stores "
+            "FROM users u LEFT JOIN orgs o ON o.id = u.org_id "
+            "WHERE u.role = 'store' AND u.org_id = %s AND u.store = ANY(%s) "
+            "ORDER BY u.username",
+            (caller_dm["org_id"], scope),
+        )
+        return jsonify(rows_to_list(cur))
     err = require_owner()
     if err:
         return err
@@ -1869,6 +1896,30 @@ def users_collection():
 
 @app.route("/api/users/<int:uid>", methods=["PATCH", "DELETE"])
 def user_item(uid):
+    caller_dm = current_user()
+    if caller_dm is not None and caller_dm["role"] == "dm":
+        # DM carve-out: password reset only, and only on store accounts that
+        # belong to their assigned stores (the auth gate already limits DMs
+        # here to PATCH).
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT id, role, org_id, store FROM users WHERE id = %s", (uid,))
+        target = cur.fetchone()
+        if not target:
+            return jsonify({"error": "User not found"}), 404
+        scope = allowed_stores() or set()
+        if (target["role"] != "store" or target["org_id"] != caller_dm["org_id"]
+                or target["store"] not in scope):
+            return jsonify({"error": "You can only manage store accounts for your assigned stores"}), 403
+        data = request.get_json(silent=True) or {}
+        if not data.get("password") or any(k for k in data if k != "password"):
+            return jsonify({"error": "District managers can only reset a store account's password"}), 403
+        cur.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (generate_password_hash(data["password"]), uid),
+        )
+        db.commit()
+        return jsonify({"updated": True, "id": uid})
     err = require_owner()
     if err:
         return err
