@@ -454,6 +454,10 @@
     .modal-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px 24px 20px; width: min(440px, 100%); box-shadow: var(--shadow-lg); }
     .modal-card h3 { margin: 0 0 6px; font-size: 1rem; font-weight: 700; }
     .modal-card p { margin: 0 0 16px; font-size: .85rem; color: var(--muted); }
+    .term-result { display: block; width: 100%; text-align: left; padding: 10px 12px; margin-bottom: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: .88rem; cursor: pointer; }
+    .term-result:hover { border-color: var(--red); background: rgba(220, 38, 38, .04); }
+    .term-result .muted { display: block; font-size: .78rem; margin-top: 2px; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -869,6 +873,13 @@
           </form>
         </div>
 
+        <!-- Terminate team member (org owners + platform admin w/ org selected) -->
+        <div class="form-panel org-owner-only" style="margin-bottom:28px">
+          <h3>Terminate a team member</h3>
+          <p class="muted" style="margin:0 0 14px">Marks the team member inactive as of today — they drop out of point tracking and attention lists, and any open write-up obligation is closed. Their history is kept.</p>
+          <button class="btn btn-red" type="button" id="termOpenBtn" style="width:auto;margin-top:0;padding:10px 20px;font-size:.92rem">Terminate team member…</button>
+        </div>
+
         <div class="section-head"><h2>Store Assignments</h2><span class="muted">Assign each store to a district manager</span></div>
         <div class="table-wrap" id="assignmentsWrap">
           <div class="loading"><span class="spinner"></span></div>
@@ -967,6 +978,23 @@
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-ghost btn-sm" id="exemptCancelBtn" style="padding:10px 16px">Cancel</button>
         <button class="btn btn-sm" id="exemptConfirmBtn" style="padding:10px 16px">Exempt entry</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Terminate team member modal (Admin tab) -->
+  <div id="termModal" class="modal-backdrop">
+    <div class="modal-card">
+      <h3>Terminate a team member</h3>
+      <p>Type a name, then select the team member to terminate.</p>
+      <label class="field-label" for="termSearch">Team member name</label>
+      <input type="text" id="termSearch" autocomplete="off" placeholder="Start typing a name…" style="margin:5px 0 8px" />
+      <div id="termResults" style="max-height:220px;overflow-y:auto;margin-bottom:8px"></div>
+      <div id="termSelected" class="muted" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--red);border-radius:8px"></div>
+      <div id="termError" class="error" style="display:none;margin-bottom:10px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" id="termCancelBtn" style="padding:10px 16px">Cancel</button>
+        <button class="btn btn-sm btn-red" id="termConfirmBtn" style="padding:10px 16px" disabled>Terminate</button>
       </div>
     </div>
   </div>
@@ -1565,15 +1593,14 @@
     // ── Overview detail modal (violation / needs-attention rows) ──
     let detailEmployeeId = null;
 
-    function logDispositionButtons(l, showTerminate) {
+    function logDispositionButtons(l) {
       // Same disposition actions as the Attendance tab; the existing
       // data-log-action delegation handles the clicks, and role-store CSS
-      // hides them for read-only store accounts. Terminate applies to the
-      // employee (detailEmployeeId), not the individual log.
+      // hides them for read-only store accounts. Termination lives on the
+      // Admin tab, not here.
       return `${isNcnsLog(l) ? `<button class="btn btn-sm btn-warn" style="margin-right:6px" data-log-action="override" data-log-id="${l.id}">Covered</button>` : ""}
         <button class="btn btn-sm btn-ghost" style="margin-right:6px" data-log-action="calloff" data-log-id="${l.id}" data-log-date="${l.date || ""}">Mark as call-off</button>
-        <button class="btn btn-sm btn-ghost" data-log-action="exempt" data-log-id="${l.id}">Exempt</button>${showTerminate ? `
-        <button class="btn btn-sm btn-red" style="margin-left:6px" data-log-action="terminate">Terminate…</button>` : ""}`;
+        <button class="btn btn-sm btn-ghost" data-log-action="exempt" data-log-id="${l.id}">Exempt</button>`;
     }
 
     function openDetailModal(employeeId, logId) {
@@ -1599,7 +1626,6 @@
         entryLogs = allLogs.filter((l) => ids.has(l.id));
       }
       entryLogs = [...entryLogs].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-      const showTerminate = canTerminate() && emp.active !== false;
       $("#detailBody").innerHTML = entryLogs.length
         ? tableHTML(
             ["Date", "Event", "Late", ""],
@@ -1607,7 +1633,7 @@
               <td>${esc(l.date || "—")}</td>
               <td><span class="pill ${statusPillForLog(l.status)}">${esc(logEventLabel(l))}</span></td>
               <td>${l.minutes_late != null ? esc(l.minutes_late) + "m" : "—"}</td>
-              <td data-label="" style="white-space:nowrap">${logDispositionButtons(l, showTerminate)}</td>
+              <td data-label="" style="white-space:nowrap">${logDispositionButtons(l)}</td>
             </tr>`).join("")
           )
         : emptyState("📋", "No point-driving entries in the window.");
@@ -1628,24 +1654,86 @@
       openDetailModal(row.dataset.detailEmp, row.dataset.detailLog ?? null);
     });
 
-    async function handleTerminate(btn) {
-      if (!detailEmployeeId) return;
-      const name = empNames[detailEmployeeId] || detailEmployeeId;
+    // ── Terminate team member (Admin tab) ──
+    // Flow: red button on Admin → modal → type a name → pick the matching
+    // team member → confirm. Termination applies to the employee, so it lives
+    // here rather than on individual attendance entries.
+    let termSelected = null;
+
+    function openTermModal() {
+      termSelected = null;
+      $("#termSearch").value = "";
+      $("#termResults").innerHTML = "";
+      $("#termSelected").style.display = "none";
+      $("#termError").style.display = "none";
+      $("#termConfirmBtn").disabled = true;
+      $("#termModal").style.display = "flex";
+      $("#termSearch").focus();
+    }
+    function closeTermModal() {
+      $("#termModal").style.display = "none";
+      termSelected = null;
+    }
+    $("#termOpenBtn").addEventListener("click", openTermModal);
+    $("#termCancelBtn").addEventListener("click", closeTermModal);
+
+    $("#termSearch").addEventListener("input", () => {
+      termSelected = null;
+      $("#termSelected").style.display = "none";
+      $("#termConfirmBtn").disabled = true;
+      const q = $("#termSearch").value.trim().toLowerCase();
+      const box = $("#termResults");
+      if (!q) { box.innerHTML = ""; return; }
+      const matches = employees
+        .filter((e) => e.active !== false && (e.name || "").toLowerCase().includes(q))
+        .slice(0, 8);
+      box.innerHTML = matches.length
+        ? matches.map((e) => `
+            <button type="button" class="term-result" data-term-emp="${esc(e.employee_id)}">
+              <strong>${esc(e.name)}</strong>
+              <span class="muted">${esc([e.position, e.store ? "Store " + e.store : ""].filter(Boolean).join(" · "))}</span>
+            </button>`).join("")
+        : `<div class="muted" style="padding:8px 2px">No active team member matches "${esc($("#termSearch").value.trim())}".</div>`;
+    });
+
+    $("#termResults").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-term-emp]");
+      if (!btn) return;
+      const emp = employees.find((x) => String(x.employee_id) === btn.dataset.termEmp);
+      if (!emp) return;
+      termSelected = emp;
+      $("#termResults").innerHTML = "";
+      $("#termSearch").value = emp.name || emp.employee_id;
+      const st = stats.find((s) => s.employee_id === emp.employee_id);
+      $("#termSelected").innerHTML = `<strong>${esc(emp.name)}</strong> — ${esc([emp.position, emp.store ? "Store " + emp.store : ""].filter(Boolean).join(" · ") || "team member")}` +
+        (st ? ` · ${st.active_points} active pts <span class="pill ${stageClass(st.disciplinary_stage)}">${esc(st.disciplinary_stage)}</span>` : "");
+      $("#termSelected").style.display = "block";
+      $("#termConfirmBtn").disabled = false;
+    });
+
+    $("#termConfirmBtn").addEventListener("click", async () => {
+      if (!termSelected) return;
+      const name = termSelected.name || termSelected.employee_id;
       if (!confirm(`Terminate ${name}?\n\nThey will be marked inactive as of today and drop out of point tracking and attention lists (history is kept). Any open write-up obligation is closed.\n\nAre you sure?`)) return;
+      const btn = $("#termConfirmBtn");
       btn.disabled = true; btn.textContent = "Terminating…";
       try {
-        await api(`/employees/${encodeURIComponent(detailEmployeeId)}/terminate`, {
+        await api(`/employees/${encodeURIComponent(termSelected.employee_id)}/terminate`, {
           method: "POST",
           body: JSON.stringify({}),
         });
         toast(`${name} terminated`);
-        closeDetailModal();
+        closeTermModal();
         loadAll();
       } catch (err) {
-        toast(err.message || "Termination failed", true);
-        btn.disabled = false; btn.textContent = "Terminate…";
+        const errEl = $("#termError");
+        errEl.textContent = err.message || "Termination failed";
+        errEl.style.display = "block";
+        btn.disabled = false;
+      } finally {
+        btn.textContent = "Terminate";
       }
-    }
+    });
 
     // ── Render: Overview ──
     function renderOverview() {
@@ -1813,7 +1901,6 @@
       if (action === "exempt") openExemptModal(id, btn);
       else if (action === "override") handleLogOverride(id, btn);
       else if (action === "calloff") handleLogCallOff(id, btn);
-      else if (action === "terminate") handleTerminate(btn);
     });
 
     function openExemptModal(id, btn) {
