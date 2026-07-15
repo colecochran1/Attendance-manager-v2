@@ -7,8 +7,19 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>Slicework</title>
+  <script>
+    // Apply the saved (or system) theme before first paint to avoid a flash
+    (function () {
+      let t = null;
+      try { t = localStorage.getItem("sw-theme"); } catch (e) {}
+      if (t !== "dark" && t !== "light")
+        t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.dataset.theme = t;
+    })();
+  </script>
   <style>
     :root {
+      color-scheme: light;
       --dom-red: #e31837;
       --dom-red-d: #b60f28;
       --dom-blue: #006491;
@@ -211,6 +222,16 @@
     .icon-btn:hover { background: var(--surface-2); }
     .icon-btn svg { width: 17px; height: 17px; }
     .icon-btn.spin-active svg { animation: spin .7s linear infinite; }
+    @media (max-width: 560px) {
+      /* keep the topbar from crowding the brand on small phones: the brand
+         box must not shrink (its text overflows under the org select),
+         so the select is the flex item that gives way instead */
+      .role-badge { display: none; }
+      .brand { flex: 0 0 auto; }
+      .topbar-actions { gap: 6px; min-width: 0; }
+      .org-view-sel { flex: 0 1 auto; min-width: 44px; max-width: 140px; }
+      .icon-btn { width: 32px; height: 32px; }
+    }
 
     /* ── Primary nav: top pills on desktop, bottom bar on mobile ── */
     nav.mainnav {
@@ -460,6 +481,55 @@
     .term-result:hover { border-color: var(--red); background: rgba(220, 38, 38, .04); }
     .term-result .muted { display: block; font-size: .78rem; margin-top: 2px; }
     .btn:disabled { opacity: .55; cursor: not-allowed; }
+
+    /* ── Dark mode ───────────────────────── */
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --dom-blue: #2f8fc0;
+      --dom-blue-d: #24759f;
+      --bg: #0b1220;
+      --surface: #121b2c;
+      --surface-2: #1a2539;
+      --border: #24304a;
+      --border-2: #354564;
+      --text: #e7edf7;
+      --muted: #97a3ba;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --orange: #f97316;
+      --red: #ef4444;
+      --shadow: 0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.3);
+      --shadow-lg: 0 10px 32px rgba(0,0,0,.55);
+    }
+    html[data-theme="dark"] a { color: #58a8d3; }
+    html[data-theme="dark"] header.topbar { background: rgba(15,23,39,.88); }
+    html[data-theme="dark"] .subtabs { background: #1c2740; }
+    html[data-theme="dark"] .role-badge,
+    html[data-theme="dark"] .org-view-sel { color: #6db8dd; background: rgba(47,143,192,.14); border-color: rgba(47,143,192,.4); }
+    html[data-theme="dark"] .banner-warn { background: rgba(154,52,18,.18); border-color: rgba(249,115,22,.35); color: #fdba74; }
+    html[data-theme="dark"] .doc-panel { background: rgba(127,29,29,.2); border-color: rgba(220,38,38,.4); }
+    html[data-theme="dark"] .doc-panel h3 { color: #fca5a5; }
+    html[data-theme="dark"] .doc-panel .doc-intro { color: #fcd34d; }
+    html[data-theme="dark"] .doc-item { border-top-color: rgba(220,38,38,.25); }
+    html[data-theme="dark"] .error { background: rgba(127,29,29,.25); border-color: rgba(220,38,38,.45); color: #fca5a5; }
+    html[data-theme="dark"] .stage-good { background: rgba(22,101,52,.3); color: #86efac; }
+    html[data-theme="dark"] .stage-warn { background: rgba(133,77,14,.32); color: #fde047; }
+    html[data-theme="dark"] .stage-orange { background: rgba(154,52,18,.32); color: #fdba74; }
+    html[data-theme="dark"] .stage-red { background: rgba(153,27,27,.34); color: #fca5a5; }
+    html[data-theme="dark"] .status-pending { background: rgba(133,77,14,.32); color: #fde047; }
+    html[data-theme="dark"] .status-approved { background: rgba(22,101,52,.3); color: #86efac; }
+    html[data-theme="dark"] .status-rejected { background: rgba(153,27,27,.34); color: #fca5a5; }
+    html[data-theme="dark"] .status-completed { background: rgba(7,89,133,.35); color: #7dd3fc; }
+    html[data-theme="dark"] .toast { border: 1px solid var(--border-2); }
+    html[data-theme="dark"] .modal-backdrop { background: rgba(0,0,0,.6); }
+    html[data-theme="dark"] .term-result:hover { background: rgba(239,68,68,.12); }
+    @media (max-width: 720px) {
+      html[data-theme="dark"] header.topbar { background: #0f1727; }
+      html[data-theme="dark"] nav.mainnav { background: rgba(15,23,39,.95); }
+    }
+    /* Theme toggle: show moon in light mode, sun in dark mode */
+    html[data-theme="dark"] #themeBtn .icon-moon { display: none; }
+    html:not([data-theme="dark"]) #themeBtn .icon-sun { display: none; }
   </style>
 </head>
 <body>
@@ -509,6 +579,10 @@
             <option value="">All organizations</option>
           </select>
           <span class="role-badge" id="roleBadge"></span>
+          <button class="icon-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="1.5" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22.5"/><line x1="4.6" y1="4.6" x2="6.4" y2="6.4"/><line x1="17.6" y1="17.6" x2="19.4" y2="19.4"/><line x1="1.5" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22.5" y2="12"/><line x1="4.6" y1="19.4" x2="6.4" y2="17.6"/><line x1="17.6" y1="6.4" x2="19.4" y2="4.6"/></svg>
+          </button>
           <button class="icon-btn" id="refreshBtn" title="Refresh" aria-label="Refresh">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
           </button>
@@ -1221,6 +1295,27 @@
     });
 
     $("#logoutBtn").addEventListener("click", () => { showLogin(); });
+
+    // ── Theme (dark mode) ──
+    function applyTheme(t) {
+      document.documentElement.dataset.theme = t;
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", t === "dark" ? "#0f1727" : "#ffffff");
+    }
+    applyTheme(document.documentElement.dataset.theme || "light");
+    $("#themeBtn").addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("sw-theme", next); } catch (e) {}
+      applyTheme(next);
+    });
+    // Follow live system-preference changes until the user picks explicitly
+    if (window.matchMedia) {
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+        let stored = null;
+        try { stored = localStorage.getItem("sw-theme"); } catch (err) {}
+        if (stored !== "dark" && stored !== "light") applyTheme(e.matches ? "dark" : "light");
+      });
+    }
 
     // ── Change own password ──
     $("#pwBtn").addEventListener("click", () => {
